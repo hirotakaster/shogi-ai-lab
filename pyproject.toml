@@ -1,0 +1,13 @@
+[project]
+name = "shogi-ai-lab"
+version = "0.1.0"
+description = "Dependency-light Web shogi AI with self-play and optional CUDA training."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+train = ["torch"]
+
+[tool.uv]
+package = false
+

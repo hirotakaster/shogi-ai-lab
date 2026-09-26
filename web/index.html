@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shogi AI Lab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+  <main class="app">
+    <section class="play-area">
+      <div class="topbar">
+        <div>
+          <h1>Shogi AI Lab</h1>
+          <p id="status">読み込み中...</p>
+        </div>
+        <div class="controls">
+          <label>
+            先手
+            <select id="blackPlayer">
+              <option value="human">あなた</option>
+              <option value="ai">AI</option>
+            </select>
+          </label>
+          <label>
+            後手
+            <select id="whitePlayer">
+              <option value="ai">AI</option>
+              <option value="human">あなた</option>
+            </select>
+          </label>
+          <label>
+            探索深さ (αβ)
+            <input id="depth" type="number" min="1" max="5" value="3">
+          </label>
+          <label>
+            持ち時間
+            <select id="timeLimit">
+              <option value="10">10秒</option>
+              <option value="30">30秒</option>
+              <option value="60">1分</option>
+            </select>
+          </label>
+          <label>
+            AIモデル
+            <select id="engineType">
+              <option value="heuristic">従来型 (Heuristics)</option>
+              <option value="nn" id="nnOption" disabled>学習モデル (Neural Net)</option>
+            </select>
+          </label>
+          <label>
+            学習済みモデル
+            <select id="modelSelect">
+              <option value="">未選択</option>
+            </select>
+          </label>
+          <label>
+            探索数 (MCTS)
+            <input id="simulations" type="number" min="16" max="4000" step="16" value="120">
+          </label>
+          <button id="startGame" class="primary">対局開始</button>
+          <button id="newGame">リセット</button>
+          <button id="aiMove">AI着手</button>
+        </div>
+      </div>
+
+      <div class="hands white" id="whiteHand"></div>
+      <div class="board-wrap">
+        <div class="files" aria-hidden="true">
+          <span>9</span><span>8</span><span>7</span><span>6</span><span>5</span><span>4</span><span>3</span><span>2</span><span>1</span>
+        </div>
+        <div id="board" class="board" aria-label="将棋盤"></div>
+        <div class="ranks" aria-hidden="true">
+          <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>七</span><span>八</span><span>九</span>
+        </div>
+      </div>
+      <div class="hands black" id="blackHand"></div>
+    </section>
+
+    <aside class="side">
+      <div class="panel">
+        <h2>局面</h2>
+        <dl>
+          <div>
+            <dt>手番</dt>
+            <dd id="turn">-</dd>
+          </div>
+          <div>
+            <dt>秒読み</dt>
+            <dd id="clock">-</dd>
+          </div>
+          <div>
+            <dt>手数</dt>
+            <dd id="moveNumber">-</dd>
+          </div>
+          <div>
+            <dt>王手</dt>
+            <dd id="check">-</dd>
+          </div>
+          <div>
+            <dt>AI</dt>
+            <dd id="search">-</dd>
+          </div>
+        </dl>
+      </div>
+      <div class="panel">
+        <h2>AI同士の対局観戦</h2>
+        <p class="panel-note">
+          上で選んだエンジンとモデルで自動対局します。学習そのものはColabで行います。
+        </p>
+        <div class="training-controls">
+          <label>
+            再生間隔
+            <select id="trainingInterval">
+              <option value="300">速い</option>
+              <option value="800" selected>標準</option>
+              <option value="1500">ゆっくり</option>
+            </select>
+          </label>
+          <button id="startTraining" class="primary">観戦開始</button>
+          <button id="stopTraining">停止</button>
+        </div>
+        <dl class="training-stats">
+          <div>
+            <dt>手数</dt>
+            <dd id="trainingPositions">-</dd>
+          </div>
+          <div>
+            <dt>指し手数</dt>
+            <dd id="trainingRecords">-</dd>
+          </div>
+        </dl>
+      </div>
+      <div class="panel history-panel">
+        <h2>棋譜</h2>
+        <ol id="history"></ol>
+      </div>
+      <div class="panel">
+        <h2>SFEN</h2>
+        <code id="sfen"></code>
+      </div>
+    </aside>
+  </main>
+  <script src="/app.js"></script>
+</body>
+
+</html>
