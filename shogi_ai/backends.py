@@ -299,11 +299,11 @@ def make_backend(kind: str = "auto", sfen: Optional[str] = None):
                 f"{error}\n"
                 "Fix it with `pip install cshogi` (and restart the runtime if a\n"
                 "NumPy version changed), or pass --backend python to use the\n"
-                "dependency-free engine -- which is roughly 1000x slower at move\n"
+                "dependency-free engine -- measured at roughly 70x slower at move\n"
                 "generation, so self-play will crawl."
             )
         if not _WARNED_ABOUT_FALLBACK:
-            # Falling back silently would hand the caller a 1000x slowdown
+            # Falling back silently would hand the caller a ~70x slowdown
             # while it still looks like the fast path was taken.
             _WARNED_ABOUT_FALLBACK = True
             print(f"WARNING: {error}\n"

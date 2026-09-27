@@ -49,6 +49,47 @@ def usable_data(path: Path) -> bool:
     return False
 
 
+def _load_history(path: Path) -> List[dict]:
+    """Read the round history, tolerating a truncated file."""
+    if not path.exists():
+        return []
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"could not read {path} ({exc}); starting a fresh history")
+        return []
+    return loaded if isinstance(loaded, list) else []
+
+
+def _print_plan(args, data_dir: Path, best_model: Path, initial_data,
+                finished_rounds, current) -> None:
+    """Say what will be reused before doing any work.
+
+    Pointing --data-dir somewhere new silently restarts the whole run, which is
+    easy to do by accident when moving output onto Drive, so the state is
+    spelled out up front rather than discovered ten minutes in.
+    """
+    print("\nplan")
+    print(f"  data dir    : {data_dir}")
+    print(f"  champion    : {best_model} "
+          f"({'found' if current is not None else 'MISSING -> round 1 starts from a random network'})")
+    if initial_data is not None:
+        print(f"  initial data: {initial_data}")
+
+    reusable = []
+    for round_number in range(1, args.rounds + 1):
+        data_path = data_dir / f"selfplay_{round_number:03d}.jsonl"
+        if round_number in finished_rounds:
+            reusable.append(f"{round_number}(done)")
+        elif count_records(data_path) > 0:
+            reusable.append(f"{round_number}(data)")
+    if reusable:
+        print(f"  reusing     : rounds {', '.join(reusable)}")
+    else:
+        print(f"  reusing     : nothing -- all {args.rounds} rounds will run from scratch")
+    print()
+
+
 def run(cmd: List[str], cwd: Path) -> None:
     printable = " ".join(str(part) for part in cmd)
     print(f"\n$ {printable}", flush=True)
@@ -109,11 +150,23 @@ def main() -> None:
     else:
         print("no checkpoint yet: round 1 self-play will use a random network")
 
-    history = []
     log_path = data_dir / "history.json"
+    history = _load_history(log_path)
+    # A round recorded in the history finished its gating match too, so there is
+    # nothing left to do for it.  Without this a re-run would replay every
+    # gating match while reusing the data and the checkpoint.
+    finished_rounds = {entry["round"] for entry in history
+                       if isinstance(entry, dict) and isinstance(entry.get("round"), int)}
     eval_simulations = args.eval_simulations or args.simulations
 
+    _print_plan(args, data_dir, best_model, initial_data, finished_rounds, current)
+
     for round_number in range(1, args.rounds + 1):
+        if round_number in finished_rounds:
+            print(f"round {round_number}/{args.rounds}: already finished in an "
+                  f"earlier run; skipping", flush=True)
+            continue
+
         started = time.time()
         print(f"\n{'=' * 60}\nround {round_number}/{args.rounds}\n{'=' * 60}", flush=True)
 
@@ -197,10 +250,10 @@ def main() -> None:
                 "--device", args.device,
                 "--seed", str(args.seed + round_number * 31),
             ]
-            completed = subprocess.run(cmd, cwd=root, check=True,
-                                       capture_output=True, text=True)
-            print(completed.stdout.strip())
-            score = _parse_score(completed.stdout)
+            match = subprocess.run(cmd, cwd=root, check=True,
+                                   capture_output=True, text=True)
+            print(match.stdout.strip())
+            score = _parse_score(match.stdout)
             if score is None:
                 print("could not read the match score; keeping the champion")
                 promoted = False

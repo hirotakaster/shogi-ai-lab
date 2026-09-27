@@ -47,7 +47,7 @@ colab/
 | | PurePythonBackend | CshogiBackend |
 | --- | --- | --- |
 | 依存 | なし | `pip install cshogi` |
-| 合法手生成 | 約1,100回/秒 | 3桁速い |
+| 合法手生成 | 393回/秒 (Colab) | 27,699回/秒 (**約70倍**) |
 | 用途 | ローカルWeb対局、テスト | Colabでの自己対局 |
 | Apple Silicon | 動く | **ビルド不可**（setup.pyがx86のSSE/AVXフラグを強制） |
 
@@ -126,16 +126,30 @@ python -m shogi_ai.learn_loop --rounds 10 --games 60 --simulations 200 \
 MCTS ツリー操作が律速するため、GPU を大きくしても自己対局の生成量はほとんど変わりません。
 `--processes` を vCPU 数に合わせることが最も効きます。
 
-純Pythonバックエンドの実測値（Apple M系, 200 sims/手）:
+Colab (T4 / 8 vCPU) での実測値:
 
-| 測定 | 値 |
+| 測定 | 純Python | cshogi |
+| --- | --- | --- |
+| `legal_moves()` | 393回/秒 | 27,699回/秒 |
+
+MCTS の実効速度（`base`、CUDA、1プロセス）:
+
+| MCTS葉バッチ (`--batch-size`) | sims/秒 |
 | --- | --- |
-| `legal_moves()` | 1,089回/秒（0.92ms） |
-| MCTS（NN評価なし） | 約530 sims/秒 |
-| MCTS（base / MPS） | 約258 sims/秒 |
+| 8 | 516 |
+| 16 | 1,758 |
+| 32 | 2,314 |
+| 64 | **3,140** |
 
-この速度では1局あたり約2分かかり、1,000局で33時間になります。
-これが Colab で cshogi を使う理由です。
+バッチを上げると sims/秒 は伸びますが、1手の探索が少ない回数の
+「まとめ読み」になり virtual loss の衝突が増えるため、**探索の質は落ちます**。
+`--batch-size 64` を使うなら `--simulations` も比例して増やしてください
+（200 sims / batch 64 では1手あたり3バッチしか回りません）。
+
+`legal_moves()` の値には SFEN/USI 橋渡しのコストが含まれます。cshogi 本体の
+合法手生成はこれより速く、現在はアダプタ側が律速です。
+
+参考（Mac, MPS, `base`）: Web対局の1手は120 sims で約0.4秒。対局用途には十分です。
 
 ## Web対局のタイマー仕様
 
