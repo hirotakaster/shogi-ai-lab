@@ -162,12 +162,14 @@ class BackendSnapshotTests(unittest.TestCase):
 
     def test_snapshots_agree_with_pieces_in_hand(self):
         backend = PurePythonBackend()
-        for usi in ["7g7f", "3c3d", "8h3c+", "2b3c"]:
+        # A bishop trade, so both players are holding a piece afterwards.
+        for usi in ["7g7f", "3c3d", "8h2b+", "3a2b"]:
             backend.push(backend.parse_usi(usi))
         direct = backend.snapshot()
         parsed = snapshot_from_sfen(backend.sfen(), direct.in_check)
         self.assertEqual([list(h) for h in direct.hands], [list(h) for h in parsed.hands])
-        self.assertNotEqual(sum(direct.hands[0]) + sum(direct.hands[1]), 0)
+        self.assertGreater(sum(direct.hands[0]), 0)
+        self.assertGreater(sum(direct.hands[1]), 0)
         np.testing.assert_array_equal(encode_planes(direct), encode_planes(parsed))
 
 

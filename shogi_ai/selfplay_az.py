@@ -115,15 +115,31 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
                        resigned=resigned, reason=reason)
 
 
-def _worker(payload):
-    """Play a slice of the games in a separate process."""
-    config, seeds = payload
+#: Per-process state, set once by :func:`_init_worker`.
+_WORKER_EVALUATOR = None
+_WORKER_CONFIG: Optional[SelfPlayConfig] = None
+
+
+def _init_worker(config: SelfPlayConfig, seed: int) -> None:
+    """Load the network once per worker process."""
+    global _WORKER_EVALUATOR, _WORKER_CONFIG
     from .evaluator import load_evaluator
 
-    evaluator = load_evaluator(config.model, preset=config.preset,
-                               device=config.device, fp16=config.fp16,
-                               seed=seeds[0])
-    return [play_one_game(evaluator, config, seed) for seed in seeds]
+    _WORKER_CONFIG = config
+    _WORKER_EVALUATOR = load_evaluator(config.model, preset=config.preset,
+                                       device=config.device, fp16=config.fp16,
+                                       seed=seed)
+
+
+def _play_seed(seed: int) -> GameSummary:
+    """Play one game with the worker's already-loaded network.
+
+    One game per task rather than a fixed slice each: the pool then hands out
+    work dynamically, so a worker that draws a run of long games no longer
+    becomes the critical path while the others sit idle, and each finished game
+    is reported as it lands instead of in a burst at the end of a slice.
+    """
+    return play_one_game(_WORKER_EVALUATOR, _WORKER_CONFIG, seed)
 
 
 def generate(config: SelfPlayConfig, games: int, out_path: str,
@@ -142,13 +158,13 @@ def generate(config: SelfPlayConfig, games: int, out_path: str,
     try:
         with open(partial_path, "w", encoding="utf-8") as sink:
             if processes > 1:
-                chunks = [seeds[i::processes] for i in range(processes)]
+                # spawn keeps each worker's CUDA context independent.
                 context = mp.get_context("spawn")
-                with context.Pool(processes) as pool:
-                    for summaries in pool.imap_unordered(_worker, [(config, c) for c in chunks if c]):
-                        for summary in summaries:
-                            _write(sink, summary, stats)
-                            _report(stats, games, started)
+                with context.Pool(processes, initializer=_init_worker,
+                                  initargs=(config, seed)) as pool:
+                    for summary in pool.imap_unordered(_play_seed, seeds, chunksize=1):
+                        _write(sink, summary, stats)
+                        _report(stats, games, started)
             else:
                 from .evaluator import load_evaluator
 

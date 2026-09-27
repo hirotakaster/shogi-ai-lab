@@ -20,9 +20,46 @@ _CSHOGI, _CSHOGI_ERROR = import_cshogi()
 HAVE_CSHOGI = _CSHOGI is not None
 SKIP_REASON = _CSHOGI_ERROR or ""
 
-#: A few positions with captures, promotions and pieces in hand.
+#: Quiet development moves: no captures, empty hands throughout.
 OPENING_LINE = ["7g7f", "3c3d", "2g2f", "8c8d", "2f2e", "8d8e", "8h7g", "3d3e"]
-CAPTURE_LINE = ["7g7f", "3c3d", "8h3c+", "2b3c", "B*4e", "3a4b"]
+#: A bishop trade, so both players end up holding a piece.
+CAPTURE_LINE = ["7g7f", "3c3d", "8h2b+", "3a2b"]
+#: Continues the trade until both sides have dropped their bishop back on.
+DROP_LINE = CAPTURE_LINE + ["B*4e", "2b3c", "6i7h", "B*5e"]
+ALL_LINES = (OPENING_LINE, CAPTURE_LINE, DROP_LINE)
+
+
+class FixtureTests(unittest.TestCase):
+    """Check the move lists above are legal.
+
+    Deliberately outside the cshogi-only class: these fixtures are only
+    exercised where cshogi is installed, so a bad line used to sit unnoticed
+    until someone ran the suite on a GPU machine.  Validating them against the
+    dependency-free engine catches that everywhere.
+    """
+
+    def test_every_line_is_legal_from_the_opening(self):
+        for name, line in (("OPENING_LINE", OPENING_LINE),
+                           ("CAPTURE_LINE", CAPTURE_LINE),
+                           ("DROP_LINE", DROP_LINE)):
+            backend = PurePythonBackend()
+            for ply, usi in enumerate(line):
+                legal = {m.usi() for m in backend.position.legal_moves()}
+                self.assertIn(usi, legal, f"{name}[{ply}] = {usi} is not legal")
+                backend.push(backend.parse_usi(usi))
+
+    def test_capture_line_fills_both_hands(self):
+        """Otherwise the hand planes would never be exercised."""
+        backend = PurePythonBackend()
+        for usi in CAPTURE_LINE:
+            backend.push(backend.parse_usi(usi))
+        black, white = backend.snapshot().hands
+        self.assertGreater(sum(black), 0, "Black holds nothing")
+        self.assertGreater(sum(white), 0, "White holds nothing")
+
+    def test_drop_line_contains_a_drop_for_each_side(self):
+        drops = [usi for usi in DROP_LINE if "*" in usi]
+        self.assertGreaterEqual(len(drops), 2, drops)
 
 
 @unittest.skipUnless(HAVE_CSHOGI, SKIP_REASON)
@@ -38,7 +75,7 @@ class CshogiAgreementTests(unittest.TestCase):
         self.assertEqual(python.turn, fast.turn)
 
     def test_sfen_agrees_along_a_line(self):
-        for line in (OPENING_LINE, CAPTURE_LINE):
+        for line in ALL_LINES:
             python, fast = self._pair()
             for usi in line:
                 python.push(python.parse_usi(usi))
@@ -46,7 +83,7 @@ class CshogiAgreementTests(unittest.TestCase):
                 self.assertEqual(python.sfen(), fast.sfen(), f"after {usi}")
 
     def test_snapshots_and_planes_agree(self):
-        for line in (OPENING_LINE, CAPTURE_LINE):
+        for line in ALL_LINES:
             python, fast = self._pair()
             for usi in [None] + line:
                 if usi:
@@ -66,12 +103,21 @@ class CshogiAgreementTests(unittest.TestCase):
             python.push(python.parse_usi(usi))
             fast.push(fast.parse_usi(usi))
         snapshot = fast.snapshot()
-        self.assertGreater(sum(snapshot.hands[0]) + sum(snapshot.hands[1]), 0)
+        # Both sides hold a bishop here, so a hand mix-up cannot hide.
+        self.assertGreater(sum(snapshot.hands[0]), 0)
+        self.assertGreater(sum(snapshot.hands[1]), 0)
         self.assertEqual([list(h) for h in snapshot.hands],
                          [list(h) for h in python.snapshot().hands])
 
+    def test_drops_agree_with_the_reference(self):
+        python, fast = self._pair()
+        for usi in DROP_LINE:
+            python.push(python.parse_usi(usi))
+            fast.push(fast.parse_usi(usi))
+            self.assertEqual(python.sfen(), fast.sfen(), f"after {usi}")
+
     def test_legal_move_sets_agree(self):
-        for line in (OPENING_LINE, CAPTURE_LINE):
+        for line in ALL_LINES:
             python, fast = self._pair()
             for usi in [None] + line:
                 if usi:
@@ -84,7 +130,7 @@ class CshogiAgreementTests(unittest.TestCase):
                 self.assertEqual(py_usi, fast_usi, f"legal moves after {usi}")
 
     def test_policy_indices_agree(self):
-        for line in (OPENING_LINE, CAPTURE_LINE):
+        for line in ALL_LINES:
             python, fast = self._pair()
             for usi in [None] + line:
                 if usi:
