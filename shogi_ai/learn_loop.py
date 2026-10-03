@@ -225,6 +225,8 @@ def main() -> None:
                 "--device", args.device,
                 "--seed", str(args.seed + round_number),
                 "--out", str(candidate),
+                "--metrics-out", str(data_dir / "train_metrics.jsonl"),
+                "--round", str(round_number),
             ]
             if current is not None:
                 cmd += ["--init", str(current)]

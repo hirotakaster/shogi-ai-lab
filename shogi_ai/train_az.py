@@ -144,6 +144,8 @@ def main() -> None:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--no-amp", action="store_true", help="disable mixed precision")
     parser.add_argument("--seed", type=int, default=20260926)
+    parser.add_argument("--metrics-out", default="", help="append per-epoch metrics as JSONL")
+    parser.add_argument("--round", type=int, default=0, help="round number for metrics logging")
     args = parser.parse_args()
 
     try:
@@ -241,12 +243,26 @@ def main() -> None:
             totals["n"] += batch
 
         seen = max(1, totals["n"])
-        line = (f"epoch {epoch}/{args.epochs}: policy={totals['policy'] / seen:.4f} "
-                f"value={totals['value'] / seen:.4f} "
-                f"lr={scheduler.get_last_lr()[0]:.2e} {time.time() - started:.1f}s")
+        current_lr = scheduler.get_last_lr()[0]
+        elapsed = time.time() - started
+        train_policy = totals["policy"] / seen
+        train_value = totals["value"] / seen
+        line = (f"epoch {epoch}/{args.epochs}: policy={train_policy:.4f} "
+                f"value={train_value:.4f} "
+                f"lr={current_lr:.2e} {elapsed:.1f}s")
+        record: Dict = {
+            "round": args.round, "epoch": epoch,
+            "policy": round(train_policy, 4), "value": round(train_value, 4),
+            "lr": round(current_lr, 8), "steps": steps,
+        }
         if val_loader:
-            line += " | " + _validate(model, val_loader, device, args.value_weight, use_amp)
+            val_str, val_dict = _validate(model, val_loader, device, args.value_weight, use_amp)
+            line += " | " + val_str
+            record.update(val_dict)
         print(line, flush=True)
+        if args.metrics_out:
+            with open(args.metrics_out, "a", encoding="utf-8") as mf:
+                mf.write(json.dumps(record) + "\n")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     save_checkpoint(args.out, model, steps=steps,
@@ -254,7 +270,8 @@ def main() -> None:
     print(f"saved {args.out} ({describe(model)}, {steps} steps)")
 
 
-def _validate(model, loader, device: str, value_weight: float, use_amp: bool) -> str:
+def _validate(model, loader, device: str, value_weight: float, use_amp: bool):
+    """Return ``(display_string, metrics_dict)``."""
     import torch
     import torch.nn.functional as F
 
@@ -274,8 +291,11 @@ def _validate(model, loader, device: str, value_weight: float, use_amp: bool) ->
             count += planes.size(0)
     model.train()
     count = max(count, 1.0)
-    return (f"val policy={policy_total / count:.4f} value={value_total / count:.4f} "
-            f"top1={agree / count:.3f}")
+    vp = round(policy_total / count, 4)
+    vv = round(value_total / count, 4)
+    t1 = round(agree / count, 3)
+    return (f"val policy={vp:.4f} value={vv:.4f} top1={t1:.3f}",
+            {"val_policy": vp, "val_value": vv, "top1": t1})
 
 
 if __name__ == "__main__":
