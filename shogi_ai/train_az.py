@@ -265,7 +265,7 @@ def _validate(model, loader, device: str, value_weight: float, use_amp: bool) ->
             planes = planes.to(device)
             policy_target = policy_target.to(device)
             value_target = value_target.to(device)
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=False):
                 policy_logits, value = model(planes)
             policy_total += float(-(policy_target * F.log_softmax(policy_logits.float(), dim=1)
                                     ).sum(dim=1).sum().item())
