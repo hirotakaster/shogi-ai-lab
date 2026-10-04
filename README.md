@@ -120,6 +120,7 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 - virtual loss による葉のバッチ収集を備えた PUCT MCTS
 - 投了、温度スケジュール、Dirichletノイズ付きの自己対局
 - リプレイバッファと混合精度学習
+- 学習時の左右反転データ拡張（方策インデックスも対称変換）
 - 世代間ゲーティング対戦と Elo 換算表示
 - 自己記述型チェックポイント（非互換な旧形式は明確に拒否）
 - 従来型αβエンジン（ベースライン）
@@ -130,7 +131,6 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 - 入玉宣言、打ち歩詰めの厳密判定
 - USIプロトコル
 - 置換表、詰み探索の探索統合
-- 左右反転によるデータ拡張
 
 ## テスト
 

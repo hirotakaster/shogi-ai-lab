@@ -178,7 +178,7 @@ def neural_move(game: GameState, data: dict, time_limit: float):
         reason = load_error(path) or "could not be loaded"
         return None, f"{requested}: {reason}; played the heuristic engine instead"
 
-    simulations = max(1, min(int(data.get("simulations", 120)), 4000))
+    simulations = max(1, min(int(data.get("simulations", 120)), 10000))
     return player.search(game.position, simulations=simulations,
                          time_limit=max(0.1, min(time_limit, 60.0))), None
 

@@ -73,7 +73,6 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   accepts a name only if it is in the current `data/` listing, so a crafted
   request cannot read outside the model directory.
 - Stronger future versions should add:
-  - left/right mirror augmentation (shogi is mirror-symmetric, so this is valid),
   - a native cshogi square mapping for feature building,
   - GPU batching across concurrent games,
   - mate search inside the tree,

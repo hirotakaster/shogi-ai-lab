@@ -19,7 +19,8 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 from .backends import raw_move_from_usi, snapshot_from_sfen
-from .encoding import NUM_FEATURE_PLANES, POLICY_SIZE, encode_planes, policy_index
+from .encoding import (NUM_FEATURE_PLANES, POLICY_SIZE, encode_planes,
+                       mirror_policy_index, policy_index)
 from .network import DEFAULT_PRESET, PRESETS, build_network, describe, load_checkpoint, save_checkpoint
 
 
@@ -70,13 +71,31 @@ def load_records(patterns: Sequence[str], max_positions: Optional[int] = None) -
 
 def _prepare(row: dict) -> dict:
     """Normalise a record into ``sfen``/``check``/``value``/``policy`` form."""
-    turn = row.get("turn", "black")
+    sfen_fields = row.get("sfen", "").split()
+    if len(sfen_fields) < 2 or sfen_fields[1] not in ("b", "w"):
+        raise ValueError(f"record has an invalid SFEN side-to-move: {row.get('sfen')!r}")
+    sfen_turn = "black" if sfen_fields[1] == "b" else "white"
+    raw_turn = row.get("turn", sfen_turn)
+    turn_aliases = {"b": "black", "black": "black", "w": "white", "white": "white"}
+    turn = turn_aliases.get(str(raw_turn).lower())
+    if turn is None:
+        raise ValueError(f"record has an invalid turn {raw_turn!r}: {row.get('sfen')!r}")
+    if turn != sfen_turn:
+        raise ValueError(
+            f"record turn {turn!r} disagrees with SFEN side-to-move "
+            f"{sfen_turn!r}: {row.get('sfen')!r}"
+        )
     sign = 1 if turn == "black" else -1
 
     if "value" in row:
         value = float(row["value"])
     else:
-        value = float(row.get("result", 0)) * sign
+        result = float(row.get("result", 0))
+        if result not in (-1.0, 0.0, 1.0):
+            raise ValueError(
+                f"legacy result must be Black outcome -1/0/1, got {result!r}"
+            )
+        value = result * sign
 
     if "policy" in row:
         policy = [(int(i), float(p)) for i, p in row["policy"]]
@@ -125,6 +144,28 @@ class SelfPlayDataset:
         return planes, target, np.array([row["value"]], dtype=np.float32)
 
 
+_MIRROR_POLICY_INDICES = np.asarray(
+    [mirror_policy_index(index) for index in range(POLICY_SIZE)], dtype=np.int64
+)
+
+
+class RandomMirrorDataset:
+    """Apply a random horizontal mirror without augmenting validation data."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        planes, policy_target, value_target = self.dataset[index]
+        if np.random.random() < 0.5:
+            planes = np.flip(planes, axis=-1).copy()
+            policy_target = policy_target[_MIRROR_POLICY_INDICES].copy()
+        return planes, policy_target, value_target
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the policy/value network.")
     parser.add_argument("--data", nargs="+", default=["data/selfplay_az.jsonl"],
@@ -143,6 +184,8 @@ def main() -> None:
     parser.add_argument("--out", default="data/policy_value.pt")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--no-amp", action="store_true", help="disable mixed precision")
+    parser.add_argument("--no-mirror-augmentation", action="store_true",
+                        help="disable random left-right mirror augmentation")
     parser.add_argument("--seed", type=int, default=20260926)
     parser.add_argument("--metrics-out", default="", help="append per-epoch metrics as JSONL")
     parser.add_argument("--round", type=int, default=0, help="round number for metrics logging")
@@ -176,6 +219,8 @@ def main() -> None:
         )
     else:
         train_set, val_set = dataset, None
+    if not args.no_mirror_augmentation:
+        train_set = RandomMirrorDataset(train_set)
 
     loader_kwargs = {"num_workers": args.workers, "pin_memory": device == "cuda"}
     if args.workers > 0:

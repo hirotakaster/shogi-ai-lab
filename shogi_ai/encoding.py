@@ -167,6 +167,24 @@ def policy_index(move: RawMove, turn: int) -> int:
     return plane * NUM_SQUARES + to_sq
 
 
+def mirror_policy_index(index: int) -> int:
+    """Map a policy index to the equivalent move after a left-right mirror."""
+    if not 0 <= index < POLICY_SIZE:
+        raise ValueError(f"policy index out of range: {index}")
+
+    plane, square = divmod(index, NUM_SQUARES)
+    rank, file = divmod(square, 9)
+    if plane < DROP_OFFSET:
+        direction = plane % NUM_DIRECTIONS
+        mirrored_direction = (0, 2, 1, 4, 3, 5, 7, 6, 9, 8)[direction]
+        move_plane = mirrored_direction + (PROMOTE_OFFSET if plane >= PROMOTE_OFFSET else 0)
+    else:
+        move_plane = plane
+
+    mirrored_square = rank * 9 + (8 - file)
+    return move_plane * NUM_SQUARES + mirrored_square
+
+
 def _sign(value: int) -> int:
     return (value > 0) - (value < 0)
 
