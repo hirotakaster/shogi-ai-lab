@@ -292,7 +292,7 @@ function render() {
   const nnOption = document.querySelector("#nnOption");
   if (state.data.nn_available) {
     nnOption.disabled = false;
-    nnOption.textContent = "学習モデル (Neural Net)";
+    nnOption.textContent = "学習モデル (NN + MCTS)";
     populateModelSelect(state.data.model_files || []);
   } else {
     nnOption.disabled = true;
