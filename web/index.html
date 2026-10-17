@@ -43,11 +43,15 @@
               <option value="60">1分</option>
             </select>
           </label>
+          <label class="control-toggle">
+            <input id="countdownSound" type="checkbox" checked>
+            秒読み音
+          </label>
           <label>
             AIモデル
             <select id="engineType">
               <option value="heuristic">従来型 (Heuristics)</option>
-              <option value="nn" id="nnOption" disabled>学習モデル (NN + MCTS)</option>
+              <option value="nn" id="nnOption" selected disabled>学習モデル (NN + MCTS)</option>
             </select>
           </label>
           <label>
@@ -58,7 +62,7 @@
           </label>
           <label>
             探索数 (MCTS)
-            <input id="simulations" type="number" min="16" max="10000" step="16" value="120">
+            <input id="simulations" type="number" min="16" max="10000" step="16" value="2000">
           </label>
           <button id="startGame" class="primary">対局開始</button>
           <button id="newGame">リセット</button>

@@ -28,10 +28,13 @@ const state = {
   remainingMs: 0,
   turnStartedAt: 0,
   timerId: null,
+  lastCountdownSecond: null,
   trainingMode: false,
   trainingRunning: false,
   trainingTimerId: null,
 };
+
+let countdownAudioContext = null;
 
 const boardEl = document.querySelector("#board");
 const statusEl = document.querySelector("#status");
@@ -45,9 +48,28 @@ const searchEl = document.querySelector("#search");
 const trainingPositionsEl = document.querySelector("#trainingPositions");
 const trainingRecordsEl = document.querySelector("#trainingRecords");
 const modelSelectEl = document.querySelector("#modelSelect");
+const countdownSoundEl = document.querySelector("#countdownSound");
+
+try {
+  const countdownSoundSetting = window.localStorage.getItem("countdownSound");
+  if (countdownSoundSetting !== null) {
+    countdownSoundEl.checked = countdownSoundSetting === "on";
+  }
+} catch (error) {
+  console.warn("Could not load countdown sound setting:", error);
+}
 
 modelSelectEl.addEventListener("change", () => {
   state.selectedModel = modelSelectEl.value || null;
+});
+
+countdownSoundEl.addEventListener("change", () => {
+  try {
+    window.localStorage.setItem("countdownSound", countdownSoundEl.checked ? "on" : "off");
+  } catch (error) {
+    console.warn("Could not save countdown sound setting:", error);
+  }
+  if (countdownSoundEl.checked) enableCountdownAudio();
 });
 
 document.querySelector("#startGame").addEventListener("click", startGame);
@@ -93,6 +115,7 @@ async function post(url, body) {
 }
 
 async function startGame() {
+  if (countdownSoundEl.checked) enableCountdownAudio();
   stopClock();
   stopTrainingLoop();
   state.trainingMode = false;
@@ -327,7 +350,10 @@ function pieceNode(piece) {
   const div = document.createElement("div");
   div.className = `piece ${piece.color}`;
   if (piece.kind.startsWith("+")) div.classList.add("promoted");
-  div.textContent = PIECES[piece.kind];
+  const label = document.createElement("span");
+  label.className = "piece-label";
+  label.textContent = PIECES[piece.kind];
+  div.appendChild(label);
   return div;
 }
 
@@ -337,10 +363,17 @@ function renderHand(color, el, hand) {
     const btn = document.createElement("button");
     btn.className = "hand-piece";
     if (state.selectedHand?.color === color && state.selectedHand?.kind === kind) btn.classList.add("selected");
-    btn.textContent = PIECES[kind];
+    btn.setAttribute("aria-label", `${PIECES[kind]} ${hand[kind]}枚`);
+    const glyph = document.createElement("span");
+    glyph.className = "piece hand-glyph";
+    const label = document.createElement("span");
+    label.className = "piece-label";
+    label.textContent = PIECES[kind];
+    glyph.appendChild(label);
+    btn.appendChild(glyph);
     const count = document.createElement("span");
     count.className = "count";
-    count.textContent = String(hand[kind]);
+    count.textContent = `× ${hand[kind]}`;
     btn.appendChild(count);
     btn.addEventListener("click", () => {
       if (!canHumanInteract() || state.data.position.turn !== color) return;
@@ -440,7 +473,38 @@ function selectedTimeMs() {
 function resetTurnClock() {
   state.remainingMs = selectedTimeMs();
   state.turnStartedAt = Date.now();
+  state.lastCountdownSecond = null;
   startClock();
+}
+
+function enableCountdownAudio() {
+  const AudioContext = window.AudioContext;
+  if (!AudioContext) {
+    console.warn("Web Audio API is unavailable; countdown sounds are disabled.");
+    return;
+  }
+  countdownAudioContext ??= new AudioContext();
+  if (countdownAudioContext.state === "suspended") {
+    countdownAudioContext.resume().catch((error) => {
+      console.warn("Could not enable countdown sounds:", error);
+    });
+  }
+}
+
+function playCountdownTick() {
+  if (!countdownAudioContext || countdownAudioContext.state !== "running") return;
+  const now = countdownAudioContext.currentTime;
+  const oscillator = countdownAudioContext.createOscillator();
+  const gain = countdownAudioContext.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(880, now);
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.12, now + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+  oscillator.connect(gain);
+  gain.connect(countdownAudioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + 0.12);
 }
 
 function startClock() {
@@ -471,6 +535,12 @@ function tickClock() {
     updateControlState();
     return;
   }
+  const seconds = Math.ceil(state.remainingMs / 1000);
+  if (countdownSoundEl.checked && seconds > 0 && seconds < 10 &&
+      seconds !== state.lastCountdownSecond) {
+    playCountdownTick();
+  }
+  state.lastCountdownSecond = seconds;
   if (state.remainingMs <= 0) {
     state.timedOut = true;
     state.thinking = false;

@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 DEFAULT_MODEL_DIR = "data"
-#: Modest default: the Web server searches on the pure-Python backend, which is
-#: far slower than cshogi, so a small budget keeps the UI responsive.
-DEFAULT_SIMULATIONS = 120
+#: The Web server searches on the pure-Python backend; the time limit can end
+#: a search before it reaches this maximum.
+DEFAULT_SIMULATIONS = 2000
 DEFAULT_BATCH_SIZE = 8
 
 

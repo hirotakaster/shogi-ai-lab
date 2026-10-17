@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 from shogi_ai.core import Position, parse_usi
 from shogi_ai.engine import AlphaBetaEngine
-from shogi_ai.nn_model import get_player, list_model_files
+from shogi_ai.nn_model import DEFAULT_SIMULATIONS, get_player, list_model_files
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -178,7 +178,7 @@ def neural_move(game: GameState, data: dict, time_limit: float):
         reason = load_error(path) or "could not be loaded"
         return None, f"{requested}: {reason}; played the heuristic engine instead"
 
-    simulations = max(1, min(int(data.get("simulations", 120)), 10000))
+    simulations = max(1, min(int(data.get("simulations", DEFAULT_SIMULATIONS)), 10000))
     return player.search(game.position, simulations=simulations,
                          time_limit=max(0.1, min(time_limit, 60.0))), None
 
