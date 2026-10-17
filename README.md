@@ -9,11 +9,14 @@
 ## クイックスタート
 
 ```bash
-python3 server.py
+git clone https://github.com/hirotakaster/shogi-ai-lab.git
+cd shogi-ai-lab
+uv sync
+uv run python server.py
 ```
 
-`http://127.0.0.1:8000` を開きます。PyTorch や学習済みモデルが無くても、
-従来型αβエンジンで対局できます。
+`http://127.0.0.1:8000` を開きます。`uv sync` はプロジェクトの仮想環境を用意します。
+通常の対局に追加パッケージは不要で、PyTorch や学習済みモデルが無くても従来型αβエンジンで対局できます。
 
 ## Web UI
 
