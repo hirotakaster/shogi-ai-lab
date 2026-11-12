@@ -113,6 +113,9 @@ def main() -> None:
     parser.add_argument("--playout-cap-fraction", type=float, default=0.0,
                         help="fraction of self-play plies at full budget; 0 disables")
     parser.add_argument("--playout-cap-simulations", type=int, default=0)
+    parser.add_argument("--parallel-games", type=int, default=1,
+                        help="concurrent self-play games sharing batched inference")
+    parser.add_argument("--inference-batch-size", type=int, default=256)
 
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--train-batch-size", type=int, default=256)
@@ -200,6 +203,8 @@ def main() -> None:
                     "--gumbel-candidates", str(args.gumbel_candidates),
                     "--playout-cap-fraction", str(args.playout_cap_fraction),
                     "--playout-cap-simulations", str(args.playout_cap_simulations),
+                    "--parallel-games", str(args.parallel_games),
+                    "--inference-batch-size", str(args.inference_batch_size),
                     "--preset", args.preset,
                     "--device", args.device,
                     "--seed", str(args.seed + round_number * 104729),

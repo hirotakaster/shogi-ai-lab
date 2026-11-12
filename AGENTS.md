@@ -44,11 +44,23 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   and compares the colour mapping, legal moves, squares and hands against the
   pure-Python engine. `tests/test_cshogi_contract.py` pins that call structure
   with a fake module, so it runs without cshogi installed.
-- `CshogiBackend` exchanges data with the encoder through SFEN and USI strings.
-  That is deliberate: cshogi cannot be built on Apple Silicon, so this keeps
-  the fast path running the same feature code as the reference path, and
-  `tests/test_cshogi_backend.py` can pin the two together on Colab. Any native
-  square-index fast path must keep that test green.
+- `CshogiBackend` reads cshogi's native arrays where the build exposes
+  them: `Board.pieces` / `Board.pieces_in_hand` for snapshots and planes,
+  and the `move_to` / `move_from` / `move_is_drop` bit-field accessors
+  for legal moves -- no SFEN or USI string is built or parsed on the hot
+  path.  Builds without those accessors fall back to the SFEN/USI string
+  exchange.  `verify_cshogi_api` cross-checks the native path against
+  the string path, and `tests/test_cshogi_backend.py` pins both against
+  the pure-Python engine, so a square-order or piece-table slip fails
+  loudly instead of silently corrupting features.  cshogi squares are
+  `(file - 1) * 9 + rank`; `_SQUARE_FROM_CSHOGI` in `backends.py` maps
+  them to snapshot squares, and cshogi's piece-type order (P L N S B R G
+  K ...) differs from `PIECE_ORDER` in gold's position -- both tables
+  live next to the conversion, do not "simplify" them.
+- Feature planes have two encoders that must agree: `encode_planes`
+  (reference, snapshot in / planes out) and `encode_planes_array`
+  (vectorised, NumPy squares in).  Backends with a `planes()` method are
+  used directly by MCTS; everything else goes through `encode_planes`.
 - MCTS values are stored from the point of view of the player to move at the
   node owning the edge, so a backup alternates sign. Terminal values are
   recorded on the node so a finished position is never selected from again.
@@ -77,6 +89,12 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   still means the move-cap adjudication above, not a low-cap ply.
 - `MCTS.run(..., simulations=N)` overrides the budget for one call only;
   playout-cap randomisation is built on it.
+- Self-play can run games concurrently in one process
+  (`--parallel-games N`): each game owns its backend, search and RNG,
+  and leaf evaluations are coalesced across games by
+  `evaluator.BatchingEvaluator` (one background thread owns the real
+  evaluator, so a CUDA context stays single-threaded).  This is the
+  single-process path only; multiprocess workers are unchanged.
 - Shogi has no stalemate draw: a side with no legal move loses. `terminal_value()`
   returns `-1.0` for that, which is correct and is why a rook move that merely
   removes every legal reply is a winning move.
@@ -98,8 +116,6 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   accepts a name only if it is in the current `data/` listing, so a crafted
   request cannot read outside the model directory.
 - Stronger future versions should add:
-  - a native cshogi square mapping for feature building,
-  - GPU batching across concurrent games,
   - mate search inside the tree,
   - entering-king declaration and pawn-drop mate,
   - the USI engine protocol.
@@ -107,7 +123,7 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 118 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 129 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

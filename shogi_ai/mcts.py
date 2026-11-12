@@ -41,6 +41,18 @@ GUMBEL_CANDIDATES = 16
 Evaluator = Callable[[np.ndarray], Tuple[np.ndarray, np.ndarray]]
 
 
+def _backend_planes(backend) -> np.ndarray:
+    """Feature planes for a backend's current position.
+
+    Backends with a native fast path (cshogi) expose ``planes()`` and skip
+    building a snapshot; anything else goes through the shared encoder.
+    """
+    planes_fn = getattr(backend, "planes", None)
+    if planes_fn is not None:
+        return planes_fn()
+    return encode_planes(backend.snapshot())
+
+
 class Node:
     __slots__ = ("moves", "raw_moves", "priors", "raw_priors", "child_visits",
                  "child_value", "child_virtual", "children", "visits",
@@ -391,7 +403,7 @@ class MCTS:
                             moves, raw_moves = backend.legal_moves()
                             slot = len(queue)
                             slot_of_node[key] = slot
-                            queue.append((child, encode_planes(backend.snapshot()),
+                            queue.append((child, _backend_planes(backend),
                                           moves, raw_moves, backend.turn))
                         waiters.append((len(paths), slot))
                     break
@@ -420,7 +432,7 @@ class MCTS:
             node.expand([], [], np.zeros(0, dtype=np.float32))
             node.terminal = -1.0
             return -1.0
-        logits, values = self.evaluator(encode_planes(backend.snapshot())[None])
+        logits, values = self.evaluator(_backend_planes(backend)[None])
         self.evaluated += 1
         indices = [policy_index(move, backend.turn) for move in raw_moves]
         node.expand(moves, raw_moves, softmax_over_legal(logits[0], indices))

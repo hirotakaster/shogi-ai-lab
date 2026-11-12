@@ -206,5 +206,37 @@ def _sq(text: str) -> int:
     return rank * 9 + file
 
 
+class ArrayEncoderTests(unittest.TestCase):
+    """encode_planes_array must be a perfect twin of encode_planes.
+
+    The cshogi fast path feeds the network through the vectorised
+    encoder; if the two ever disagree, training data from the fast
+    backend silently differs from the reference backend's.
+    """
+
+    def test_array_encoder_matches_reference_along_lines(self):
+        import numpy as np
+
+        from shogi_ai.encoding import encode_planes_array
+
+        lines = [
+            [],
+            ["7g7f", "3c3d", "8h2b+", "3a2b"],
+            ["7g7f", "3c3d", "8h2b+", "3a2b", "B*4e", "2b3c", "6i7h", "B*5e"],
+        ]
+        for line in lines:
+            backend = PurePythonBackend()
+            for usi in [None] + line:
+                if usi:
+                    backend.push(backend.parse_usi(usi))
+                raw = backend.snapshot()
+                reference = encode_planes(raw)
+                fast = encode_planes_array(
+                    np.asarray(raw.squares, dtype=np.int64),
+                    raw.hands, raw.turn, raw.in_check)
+                np.testing.assert_array_equal(fast, reference,
+                                              err_msg=f"after {usi}")
+
+
 if __name__ == "__main__":
     unittest.main()

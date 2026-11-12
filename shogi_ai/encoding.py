@@ -137,6 +137,47 @@ def encode_planes(raw: RawSnapshot, out=None):
     return out.reshape(NUM_FEATURE_PLANES, 9, 9)
 
 
+def encode_planes_array(squares, hands, turn: int, in_check: bool, out=None):
+    """Vectorised twin of :func:`encode_planes` for NumPy square arrays.
+
+    ``squares`` is an ``(81,)`` array of the same signed piece codes a
+    :class:`RawSnapshot` carries, in the same ``rank * 9 + file`` order.
+    The cshogi fast path builds that array straight from ``Board.pieces``
+    and comes here, skipping both the SFEN string and the Python loop in
+    :func:`encode_planes`.  The two implementations are pinned against
+    each other by the encoding tests, so they cannot drift apart.
+    """
+    import numpy as np
+
+    if out is None:
+        out = np.zeros((NUM_FEATURE_PLANES, NUM_SQUARES), dtype=np.float32)
+    else:
+        out = out.reshape(NUM_FEATURE_PLANES, NUM_SQUARES)
+        out.fill(0.0)
+
+    codes = np.asarray(squares)
+    black_to_move = turn > 0
+    # Destination index of every source square after the mover's-view
+    # normalisation: identity for Black, 180-degree rotation for White.
+    dest = np.arange(NUM_SQUARES) if black_to_move else 80 - np.arange(NUM_SQUARES)
+    own = (codes > 0) == black_to_move
+    occupied = codes != 0
+    planes = np.where(own, OWN_BOARD_OFFSET, OPP_BOARD_OFFSET) + np.abs(codes) - 1
+    out[planes[occupied], dest[occupied]] = 1.0
+
+    own_hand, opp_hand = (hands if black_to_move else (hands[1], hands[0]))
+    for base, counts in ((OWN_HAND_OFFSET, own_hand), (OPP_HAND_OFFSET, opp_hand)):
+        for i, (_kind, cap) in enumerate(HAND_LAYOUT):
+            filled = min(int(counts[i]), cap)
+            if filled:
+                start = base + _HAND_OFFSET[i]
+                out[start:start + filled, :] = 1.0
+
+    if in_check:
+        out[CHECK_PLANE, :] = 1.0
+    return out.reshape(NUM_FEATURE_PLANES, 9, 9)
+
+
 def policy_index(move: RawMove, turn: int) -> int:
     """Map an absolute move to its index in the ``2187``-wide policy head."""
     black_to_move = turn > 0

@@ -53,6 +53,16 @@ class SelfPlayConfig:
     playout_cap_fraction: float = 0.0
     #: Budget for capped plies; 0 means a quarter of ``simulations``.
     playout_cap_simulations: int = 0
+    #: Games played concurrently in one process (threads) sharing a
+    #: :class:`shogi_ai.evaluator.BatchingEvaluator`, so leaf evaluations
+    #: from different games coalesce into larger network batches.  Only
+    #: the single-process path uses it; multiprocess workers each own a
+    #: GPU context already and play one game at a time per task.
+    parallel_games: int = 1
+    #: Largest batch the coalescing evaluator may form across games.
+    inference_batch_size: int = 256
+    #: How long the coalescing evaluator waits for more planes (ms).
+    inference_wait_ms: float = 5.0
 
     def capped_simulations(self) -> int:
         if self.playout_cap_simulations > 0:
@@ -187,6 +197,32 @@ def _play_seed(seed: int) -> GameSummary:
     return play_one_game(_WORKER_EVALUATOR, _WORKER_CONFIG, seed)
 
 
+def _concurrent_summaries(evaluator, config: SelfPlayConfig, seeds):
+    """Yield game summaries from games played concurrently in threads.
+
+    Each game owns its backend, search and RNG; the only shared state is
+    the evaluator, wrapped so leaf batches from different games coalesce
+    into single network calls.  Summaries are yielded as games finish.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from .evaluator import BatchingEvaluator
+
+    batching = BatchingEvaluator(
+        evaluator,
+        max_batch=config.inference_batch_size,
+        max_wait=config.inference_wait_ms / 1000.0,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=config.parallel_games) as pool:
+            futures = [pool.submit(play_one_game, batching, config, seed)
+                       for seed in seeds]
+            for future in as_completed(futures):
+                yield future.result()
+    finally:
+        batching.close()
+
+
 def generate(config: SelfPlayConfig, games: int, out_path: str,
              processes: int = 1, seed: int = 20260926) -> dict:
     """Run ``games`` self-play games and append them to ``out_path``."""
@@ -215,8 +251,13 @@ def generate(config: SelfPlayConfig, games: int, out_path: str,
 
                 evaluator = load_evaluator(config.model, preset=config.preset,
                                            device=config.device, fp16=config.fp16, seed=seed)
-                for game_seed in seeds:
-                    _write(sink, play_one_game(evaluator, config, game_seed), stats)
+                if config.parallel_games > 1:
+                    summaries = _concurrent_summaries(evaluator, config, seeds)
+                else:
+                    summaries = (play_one_game(evaluator, config, game_seed)
+                                 for game_seed in seeds)
+                for summary in summaries:
+                    _write(sink, summary, stats)
                     _report(stats, games, started)
             sink.flush()
             os.fsync(sink.fileno())
@@ -279,6 +320,13 @@ def main() -> None:
                              "0 disables playout-cap randomisation")
     parser.add_argument("--playout-cap-simulations", type=int, default=0,
                         help="budget for capped plies; 0 means simulations // 4")
+    parser.add_argument("--parallel-games", type=int, default=1,
+                        help="games played concurrently in-process, sharing "
+                             "batched inference (single-process path only)")
+    parser.add_argument("--inference-batch-size", type=int, default=256,
+                        help="largest cross-game inference batch")
+    parser.add_argument("--inference-wait-ms", type=float, default=5.0,
+                        help="how long inference waits to coalesce a batch (ms)")
     parser.add_argument("--model", default="", help="checkpoint; omitted means a random network")
     parser.add_argument("--preset", default="base", help="architecture when --model is omitted")
     parser.add_argument("--device", default="auto")
@@ -301,6 +349,9 @@ def main() -> None:
         gumbel_candidates=args.gumbel_candidates,
         playout_cap_fraction=args.playout_cap_fraction,
         playout_cap_simulations=args.playout_cap_simulations,
+        parallel_games=args.parallel_games,
+        inference_batch_size=args.inference_batch_size,
+        inference_wait_ms=args.inference_wait_ms,
     )
     stats = generate(config, args.games, args.out, processes=args.processes, seed=args.seed)
     print(f"wrote {stats['positions']} positions from {stats['games']} games "

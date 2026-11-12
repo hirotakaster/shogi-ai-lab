@@ -14,9 +14,9 @@ Web画面で人間と対局でき、Google Colab の GPU で AlphaZero 方式の
 shogi_ai/
   core.py         将棋ルール、盤表現、SFEN入出力、合法手生成
   encoding.py     特徴量85プレーンと方策2187インデックス（全バックエンド共通）
-  backends.py     PurePythonBackend（依存ゼロ）と CshogiBackend（高速）
+  backends.py     PurePythonBackend（依存ゼロ）と CshogiBackend（高速、ネイティブ配列読み取り）
   network.py      ResNet policy/value ネット唯一の定義とチェックポイント入出力
-  evaluator.py    バッチ推論ラッパー（CUDA / MPS / CPU）
+  evaluator.py    バッチ推論ラッパー（CUDA / MPS / CPU）、対局間バッチ結合（BatchingEvaluator）
   mcts.py         PUCT探索／Gumbel AlphaZero（search_mode）、virtual lossによる葉のバッチ収集
   selfplay_az.py  MCTS自己対局 → 学習レコード生成
   train_az.py     policy + value 同時学習、リプレイバッファ
@@ -167,7 +167,7 @@ MCTS の実効速度（`base`、CUDA、1プロセス）:
 python3 -m unittest discover -s tests
 ```
 
-118テスト。cshogi 関連と PyTorch 必須のテストは未導入環境ではスキップされます。
+129テスト。cshogi 関連と PyTorch 必須のテストは未導入環境ではスキップされます。
 Colabでは必ず実行し、スキップされていないことを確認してください。
 
 ## 今後の強化ポイント

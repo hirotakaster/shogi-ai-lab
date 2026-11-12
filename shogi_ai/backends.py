@@ -8,10 +8,15 @@ Two implementations share one interface:
 
 ``CshogiBackend``
     Wraps ``cshogi.Board``.  Orders of magnitude faster, used for self-play on
-    Colab.  It deliberately exchanges data with the shared encoder through SFEN
-    and USI strings: that costs a little speed but means the features and
-    policy indices are produced by exactly the same code as the pure-Python
-    backend, so the two cannot disagree about what a position looks like.
+    Colab.  Where the cshogi build exposes its native arrays it reads them
+    directly -- ``Board.pieces`` / ``Board.pieces_in_hand`` for snapshots and
+    the ``move_to`` / ``move_from`` bit-field accessors for legal moves -- so
+    no SFEN or USI string is built or parsed on the hot path.  Builds without
+    those accessors fall back to exchanging data through SFEN and USI
+    strings.  Either way the values handed to the shared encoder are the
+    same raw snapshots and raw moves, and :func:`verify_cshogi_api` checks
+    the native path against the string path, so the two cannot disagree
+    about what a position looks like.
 
 Both report terminal values from the **side to move**'s point of view.
 """
@@ -21,7 +26,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .core import BLACK, Move, Position, parse_square, position_from_sfen
-from .encoding import HAND_ORDER, PIECE_INDEX, RawMove, RawSnapshot
+from .encoding import (HAND_ORDER, PIECE_INDEX, RawMove, RawSnapshot,
+                       encode_planes, encode_planes_array)
 
 #: Fourfold repetition is adjudicated as a draw (sennichite).
 REPETITION_LIMIT = 4
@@ -85,6 +91,44 @@ def raw_move_from_usi(usi: str) -> RawMove:
 def _sq(text: str) -> int:
     rank, file = parse_square(text)
     return rank * 9 + file
+
+
+#: cshogi numbers its squares ``(file - 1) * 9 + rank`` (file 1 is the
+#: rightmost file from Black's side), while a raw snapshot uses
+#: ``rank * 9 + file_from_left`` with file 9 on the left.  This table maps
+#: a cshogi square index to the snapshot index of the same square.
+_SQUARE_FROM_CSHOGI: Tuple[int, ...] = tuple(
+    (csq % 9) * 9 + (8 - csq // 9) for csq in range(81)
+)
+
+#: Signed snapshot code for each cshogi piece *type* (1..14).  cshogi's
+#: type order is P L N S B R G K +P +L +N +S +B +R; the snapshot order
+#: (:data:`shogi_ai.encoding.PIECE_ORDER`) swaps gold with bishop/rook.
+_TYPE_TO_CODE: Tuple[int, ...] = (0, 1, 2, 3, 4, 6, 7, 5, 8, 9, 10, 11, 12, 13, 14)
+
+
+def _code_from_cshogi_piece(piece: int) -> int:
+    """Signed snapshot code for a cshogi piece value (black 1-14, white 17-30)."""
+    if piece < 16:
+        return _TYPE_TO_CODE[piece]
+    return -_TYPE_TO_CODE[piece - 16]
+
+
+_PIECE_LUT = None
+
+
+def _piece_lut():
+    """NumPy look-up table: cshogi piece value -> signed snapshot code."""
+    global _PIECE_LUT
+    if _PIECE_LUT is None:
+        import numpy as np
+
+        lut = np.zeros(31, dtype=np.int64)
+        for piece in range(1, 31):
+            if piece != 15 and piece != 16:
+                lut[piece] = _code_from_cshogi_piece(piece)
+        _PIECE_LUT = lut
+    return _PIECE_LUT
 
 
 class PurePythonBackend:
@@ -237,18 +281,77 @@ class CshogiBackend:
             self._black = cshogi.BLACK
         except AttributeError as exc:
             raise ImportError("cshogi does not expose BLACK") from exc
+        #: Native accessors, resolved once.  ``None`` when this build does
+        #: not expose them; snapshot / legal_moves then use the SFEN / USI
+        #: string path instead.  Presence is checked, never assumed, for
+        #: the same reason ``move_to_usi`` is resolved dynamically.
+        self._native = None
+        if (hasattr(self.board, "pieces") and hasattr(self.board, "pieces_in_hand")
+                and all(hasattr(cshogi, name) for name in (
+                    "move_to", "move_from", "move_is_drop",
+                    "move_is_promotion", "move_drop_hand_piece"))):
+            self._native = (
+                cshogi.move_to, cshogi.move_from, cshogi.move_is_drop,
+                cshogi.move_is_promotion, cshogi.move_drop_hand_piece,
+            )
 
     @property
     def turn(self) -> int:
         return BLACK if self.board.turn == self._black else -BLACK
 
     def snapshot(self) -> RawSnapshot:
-        return snapshot_from_sfen(self.board.sfen(), self.board.is_check())
+        if self._native is None:
+            return snapshot_from_sfen(self.board.sfen(), self.board.is_check())
+        squares = [0] * 81
+        for csq, piece in enumerate(self.board.pieces):
+            if piece:
+                squares[_SQUARE_FROM_CSHOGI[csq]] = _code_from_cshogi_piece(piece)
+        black_hand, white_hand = self.board.pieces_in_hand
+        return RawSnapshot(
+            squares=squares,
+            hands=(list(black_hand), list(white_hand)),
+            turn=self.turn,
+            in_check=self.board.is_check(),
+        )
+
+    def planes(self):
+        """Feature planes for the current position, without a snapshot.
+
+        Only the fast path has this: MCTS uses it when present and falls
+        back to ``encode_planes(backend.snapshot())`` otherwise, so the
+        pure-Python backend is untouched.  The result is exactly what
+        ``encode_planes(self.snapshot())`` returns -- the encoding tests
+        pin the two together.
+        """
+        if self._native is None:
+            return encode_planes(self.snapshot())
+        import numpy as np
+
+        pieces = np.asarray(self.board.pieces, dtype=np.int64)
+        squares = np.zeros(81, dtype=np.int64)
+        squares[list(_SQUARE_FROM_CSHOGI)] = _piece_lut()[pieces]
+        black_hand, white_hand = self.board.pieces_in_hand
+        return encode_planes_array(
+            squares, (list(black_hand), list(white_hand)),
+            self.turn, self.board.is_check(),
+        )
 
     def legal_moves(self) -> Tuple[List[int], List[RawMove]]:
         native = list(self.board.legal_moves)
-        to_usi = self._move_to_usi
-        raw = [raw_move_from_usi(to_usi(move)) for move in native]
+        if self._native is None:
+            to_usi = self._move_to_usi
+            raw = [raw_move_from_usi(to_usi(move)) for move in native]
+            return native, raw
+        move_to, move_from, is_drop, is_promotion, drop_piece = self._native
+        raw = []
+        for move in native:
+            to_sq = _SQUARE_FROM_CSHOGI[move_to(move)]
+            if is_drop(move):
+                raw.append(RawMove(None, to_sq, False,
+                                   HAND_ORDER[drop_piece(move)]))
+            else:
+                raw.append(RawMove(_SQUARE_FROM_CSHOGI[move_from(move)],
+                                   to_sq, bool(is_promotion(move)), None))
         return native, raw
 
     def sfen(self) -> str:
@@ -391,6 +494,28 @@ def verify_cshogi_api() -> List[str]:
             problems.append("board squares disagree with the pure-Python engine")
         if [list(h) for h in snapshot.hands] != [list(h) for h in expected.hands]:
             problems.append("hand counts disagree with the pure-Python engine")
+
+    if backend._native is not None:
+        # The fast path must produce exactly what the string path produces;
+        # a square-order or piece-table slip would corrupt features silently.
+        def native_agrees():
+            via_sfen = snapshot_from_sfen(backend.sfen(), backend.board.is_check())
+            native = backend.snapshot()
+            if list(native.squares) != list(via_sfen.squares):
+                raise AssertionError("native snapshot squares differ from the SFEN path")
+            if [list(h) for h in native.hands] != [list(h) for h in via_sfen.hands]:
+                raise AssertionError("native snapshot hands differ from the SFEN path")
+            native_moves, native_raw = backend.legal_moves()
+            usi_raw = [raw_move_from_usi(backend.move_usi(m)) for m in native_moves]
+            if list(native_raw) != usi_raw:
+                raise AssertionError("native legal moves differ from the USI path")
+            import numpy as np
+
+            if not np.array_equal(backend.planes(), encode_planes(native)):
+                raise AssertionError("native planes differ from encode_planes(snapshot())")
+            return True
+
+        check("native snapshot / legal moves vs SFEN / USI path", native_agrees)
 
     def push_pop():
         before = backend.sfen()

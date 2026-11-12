@@ -185,5 +185,63 @@ class CshogiAgreementTests(unittest.TestCase):
             self.assertAlmostEqual(sum(p for _i, p in record["policy"]), 1.0, places=4)
 
 
+@unittest.skipUnless(HAVE_CSHOGI, SKIP_REASON)
+class NativePathTests(unittest.TestCase):
+    """The native cshogi path must equal the SFEN/USI string path exactly.
+
+    These run only where the installed cshogi exposes the native
+    accessors (older or partial builds fall back to strings, which the
+    agreement tests above already cover).
+    """
+
+    def setUp(self):
+        backend = CshogiBackend()
+        if backend._native is None:
+            self.skipTest("this cshogi build has no native accessors")
+
+    def test_native_snapshot_equals_sfen_snapshot(self):
+        from shogi_ai.backends import snapshot_from_sfen
+
+        for line in ALL_LINES:
+            fast = CshogiBackend()
+            for usi in [None] + line:
+                if usi:
+                    fast.push(fast.parse_usi(usi))
+                native = fast.snapshot()
+                via_sfen = snapshot_from_sfen(fast.sfen(), fast.board.is_check())
+                self.assertEqual(list(native.squares), list(via_sfen.squares),
+                                 f"squares after {usi}")
+                self.assertEqual([list(h) for h in native.hands],
+                                 [list(h) for h in via_sfen.hands],
+                                 f"hands after {usi}")
+
+    def test_native_raw_moves_equal_usi_raw_moves(self):
+        from shogi_ai.backends import raw_move_from_usi
+
+        for line in ALL_LINES:
+            fast = CshogiBackend()
+            for usi in [None] + line:
+                if usi:
+                    fast.push(fast.parse_usi(usi))
+                native_moves, native_raw = fast.legal_moves()
+                usi_raw = [raw_move_from_usi(fast.move_usi(m)) for m in native_moves]
+                self.assertEqual(list(native_raw), usi_raw, f"moves after {usi}")
+
+    def test_native_planes_equal_encoded_snapshot(self):
+        for line in ALL_LINES:
+            fast = CshogiBackend()
+            for usi in [None] + line:
+                if usi:
+                    fast.push(fast.parse_usi(usi))
+                np.testing.assert_array_equal(
+                    fast.planes(), encode_planes(fast.snapshot()),
+                    err_msg=f"planes after {usi}")
+
+    def test_verify_reports_no_problems_with_native_path(self):
+        from shogi_ai.backends import verify_cshogi_api
+
+        self.assertEqual(verify_cshogi_api(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
