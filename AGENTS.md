@@ -52,6 +52,13 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 - MCTS values are stored from the point of view of the player to move at the
   node owning the edge, so a backup alternates sign. Terminal values are
   recorded on the node so a finished position is never selected from again.
+- Self-play keeps the search tree between plies: `MCTS.advance` retains the
+  played move's subtree as the next root. Root Dirichlet noise is always
+  mixed from the raw network priors (`Node.raw_priors`), never from an
+  already-noised distribution, so reuse cannot wash the priors out.
+- A self-play game cut off by the move cap is not a draw: its records carry
+  `capped: true`, and `train_az` uses the search's root value `q` as their
+  value target instead of the forced-draw outcome.
 - Shogi has no stalemate draw: a side with no legal move loses. `terminal_value()`
   returns `-1.0` for that, which is correct and is why a rook move that merely
   removes every legal reply is a winning move.
@@ -82,7 +89,7 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 92 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 99 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

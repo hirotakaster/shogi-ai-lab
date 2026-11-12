@@ -87,7 +87,14 @@ def _prepare(row: dict) -> dict:
         )
     sign = 1 if turn == "black" else -1
 
-    if "value" in row:
+    if row.get("capped") and "q" in row:
+        # The game was cut off by the move cap, so its recorded outcome is
+        # an adjudication, not a result. Training the value head on that
+        # forced draw teaches it that sharp positions are level; the
+        # search's own root value (already from the mover's point of view)
+        # is the less biased target.
+        value = float(row["q"])
+    elif "value" in row:
         value = float(row["value"])
     else:
         result = float(row.get("result", 0))

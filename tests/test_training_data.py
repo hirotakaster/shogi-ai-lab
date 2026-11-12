@@ -49,6 +49,35 @@ class LegacyRecordTests(unittest.TestCase):
             _prepare(row)
 
 
+class CappedRecordTests(unittest.TestCase):
+    """Move-capped games must not teach the value head a forced draw."""
+
+    def _row(self, **overrides):
+        row = {
+            "sfen": INITIAL_SFEN,
+            "turn": "black",
+            "move": "7g7f",
+            "policy": [[0, 1.0]],
+            "value": 0.0,
+            "q": 0.6,
+        }
+        row.update(overrides)
+        return row
+
+    def test_capped_record_uses_the_search_value(self):
+        prepared = _prepare(self._row(capped=True))
+        self.assertEqual(prepared["value"], 0.6)
+
+    def test_uncapped_record_keeps_the_game_result(self):
+        prepared = _prepare(self._row())
+        self.assertEqual(prepared["value"], 0.0)
+
+    def test_capped_record_without_a_search_value_falls_back(self):
+        row = self._row(capped=True)
+        del row["q"]
+        self.assertEqual(_prepare(row)["value"], 0.0)
+
+
 class RandomMirrorDatasetTests(unittest.TestCase):
     def test_mirrors_planes_and_policy_target_together(self):
         policy_index = 1 * 81 + 2 * 9 + 3

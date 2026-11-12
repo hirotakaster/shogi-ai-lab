@@ -102,6 +102,9 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
                 break
 
         backend.push(move)
+        # Keep the played move's subtree: the next ply's search starts
+        # from its statistics instead of rebuilding the tree from zero.
+        mcts.advance(move)
         ply += 1
 
     if outcome is None:
@@ -111,6 +114,10 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
     for record in pending:
         sign = 1 if record["turn"] == "black" else -1
         record["value"] = float(outcome * sign)
+        if reason == "max moves":
+            # Not a played-out result: training marks these so the value
+            # target can come from the search instead of a forced draw.
+            record["capped"] = True
     return GameSummary(records=pending, outcome=outcome, plies=ply,
                        resigned=resigned, reason=reason)
 

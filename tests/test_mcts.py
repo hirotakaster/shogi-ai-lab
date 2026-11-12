@@ -143,6 +143,53 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(root.terminal, -1.0)
 
 
+class TreeReuseTests(unittest.TestCase):
+    def test_advance_retains_the_played_childs_statistics(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=64, batch_size=8)
+        root = mcts.run(backend)
+        move, _counts = select_move(root, 0.0, np.random.default_rng(0))
+        child = root.children[root.moves.index(move)]
+        self.assertIsNotNone(child)
+        retained_visits = child.visits
+        self.assertGreater(retained_visits, 0)
+
+        backend.push(move)
+        self.assertTrue(mcts.advance(move))
+        reused = mcts.run(backend)
+        self.assertIs(reused, child)
+        # The second search adds its simulations on top of the retained
+        # ones instead of starting the count from zero again.
+        self.assertEqual(reused.visits, retained_visits + 64)
+
+    def test_advance_with_an_unknown_move_retains_nothing(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=16, batch_size=4)
+        mcts.run(backend)
+        self.assertFalse(mcts.advance("not a move"))
+        fresh = mcts.run(backend)
+        self.assertEqual(fresh.visits, 16)
+
+    def test_advance_before_any_search_retains_nothing(self):
+        mcts = MCTS(uniform_evaluator, simulations=16, batch_size=4)
+        self.assertFalse(mcts.advance("7g7f"))
+
+    def test_root_noise_on_a_reused_root_stays_anchored_to_network_priors(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=32, batch_size=8,
+                    add_noise=True, rng=np.random.default_rng(0))
+        root = mcts.run(backend)
+        move, _counts = select_move(root, 0.0, np.random.default_rng(0))
+        backend.push(move)
+        self.assertTrue(mcts.advance(move))
+        reused = mcts.run(backend)
+        # Still a distribution, and still mixed from the raw priors: the
+        # network's own ranking must survive repeated noise applications.
+        self.assertAlmostEqual(float(reused.priors.sum()), 1.0, places=5)
+        base = reused.raw_priors
+        self.assertTrue(np.all(reused.priors <= 0.75 * base + 0.25 + 1e-6))
+
+
 class MoveSelectionTests(unittest.TestCase):
     def test_zero_temperature_picks_the_most_visited(self):
         root = Node()

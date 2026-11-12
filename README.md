@@ -143,7 +143,7 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 python3 -m unittest discover -s tests
 ```
 
-92テスト。cshogi 関連と PyTorch 必須のテストは、未導入環境（Apple Silicon など）ではスキップされます。
+99テスト。cshogi 関連と PyTorch 必須のテストは、未導入環境（Apple Silicon など）ではスキップされます。
 
 ## 開発環境
 

@@ -32,13 +32,19 @@ Evaluator = Callable[[np.ndarray], Tuple[np.ndarray, np.ndarray]]
 
 
 class Node:
-    __slots__ = ("moves", "raw_moves", "priors", "child_visits", "child_value",
-                 "child_virtual", "children", "visits", "expanded", "terminal")
+    __slots__ = ("moves", "raw_moves", "priors", "raw_priors", "child_visits",
+                 "child_value", "child_virtual", "children", "visits",
+                 "expanded", "terminal")
 
     def __init__(self):
         self.moves: List = []
         self.raw_moves: List = []
         self.priors: Optional[np.ndarray] = None
+        #: The network's priors before root noise.  Noise is always mixed
+        #: from these, never from an already-noised distribution, so a root
+        #: retained across moves keeps its exploration anchored to what the
+        #: network actually said.
+        self.raw_priors: Optional[np.ndarray] = None
         self.child_visits: Optional[np.ndarray] = None
         self.child_value: Optional[np.ndarray] = None
         self.child_virtual: Optional[np.ndarray] = None
@@ -53,6 +59,7 @@ class Node:
         self.moves = list(moves)
         self.raw_moves = list(raw_moves)
         self.priors = priors
+        self.raw_priors = priors.copy()
         self.child_visits = np.zeros(count, dtype=np.float32)
         self.child_value = np.zeros(count, dtype=np.float32)
         self.child_virtual = np.zeros(count, dtype=np.float32)
@@ -121,6 +128,8 @@ class MCTS:
         self.add_noise = add_noise
         self.rng = rng or np.random.default_rng()
         self.last_root: Optional[Node] = None
+        #: Subtree retained by :meth:`advance`, consumed by the next run.
+        self._pending_root: Optional[Node] = None
         self.root_value = 0.0
         self.evaluated = 0
         self.simulations_done = 0
@@ -138,13 +147,28 @@ class MCTS:
         self.evaluated = 0
         self.elapsed = 0.0
         started = time.time()
-        root = Node()
-        self.root_value = self._expand_root(root, backend)
-        if not root.moves:
+        # A subtree retained by advance() becomes the root when the caller
+        # has played on from exactly the position it describes; anything
+        # else starts a fresh tree.
+        root = self._pending_root if self._pending_root is not None else Node()
+        self._pending_root = None
+        if root.terminal is not None:
+            self.root_value = root.terminal
             self.simulations_done = 0
             self.elapsed = time.time() - started
             self.last_root = root
             return root
+        if root.expanded:
+            # Retained subtree: its gathered statistics are the root value
+            # estimate until the new simulations refine it.
+            self.root_value = root.mean_value()
+        else:
+            self.root_value = self._expand_root(root, backend)
+            if not root.moves:
+                self.simulations_done = 0
+                self.elapsed = time.time() - started
+                self.last_root = root
+                return root
         if self.add_noise:
             self._apply_root_noise(root)
 
@@ -244,8 +268,34 @@ class MCTS:
         return float(values[0])
 
     def _apply_root_noise(self, root: Node) -> None:
+        base = root.raw_priors if root.raw_priors is not None else root.priors
         noise = self.rng.dirichlet([DIRICHLET_ALPHA] * len(root.moves)).astype(np.float32)
-        root.priors = (1.0 - DIRICHLET_EPSILON) * root.priors + DIRICHLET_EPSILON * noise
+        root.priors = (1.0 - DIRICHLET_EPSILON) * base + DIRICHLET_EPSILON * noise
+
+    def advance(self, move) -> bool:
+        """Retain the subtree under ``move`` as the next search's root.
+
+        Callers that play a game move by move -- self-play above all --
+        would otherwise throw away every visit the search just gathered
+        and rebuild the tree from nothing on the next ply.  The retained
+        child's statistics describe exactly the position the caller
+        reaches by playing ``move``, so the next run starts from them
+        instead of from zero.  Returns False when there is nothing to
+        retain (no search yet, the move was not in the tree, or its child
+        was never created).
+        """
+        self._pending_root = None
+        root = self.last_root
+        if root is None:
+            return False
+        for index, candidate in enumerate(root.moves):
+            if candidate == move:
+                child = root.children[index]
+                if child is None:
+                    return False
+                self._pending_root = child
+                return True
+        return False
 
     @staticmethod
     def _backup(path: Sequence[Tuple[Node, int]], value: float) -> None:
