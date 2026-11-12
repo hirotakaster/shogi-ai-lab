@@ -108,36 +108,51 @@ def _principal_depth(root) -> int:
     return depth
 
 
-_PLAYERS: Dict[str, NeuralPlayer] = {}
-_LOAD_ERRORS: Dict[str, str] = {}
+#: Cached players and load failures, both keyed by path and stamped with
+#: the file's signature. A checkpoint replaced at the same path -- the
+#: normal end of a training round -- has a different signature, so a stale
+#: player or a remembered failure never outlives the file it came from;
+#: the server does not have to be restarted to pick up a fixed model.
+_PLAYERS: Dict[str, tuple] = {}
+_LOAD_ERRORS: Dict[str, tuple] = {}
+
+
+def _file_signature(path: str):
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 def get_player(path: str, **kwargs) -> Optional[NeuralPlayer]:
     """Return a cached player for ``path``, or ``None`` if it cannot be loaded."""
     if not path:
         return None
-    if path in _PLAYERS:
-        return _PLAYERS[path]
-    if path in _LOAD_ERRORS:
-        return None
     if os.path.isdir(path):
         candidates = list_model_files(path)
         if not candidates:
             return None
         path = candidates[0]
-        if path in _PLAYERS:
-            return _PLAYERS[path]
-    if not os.path.exists(path):
-        _LOAD_ERRORS[path] = "file not found"
+    signature = _file_signature(path)
+    cached = _PLAYERS.get(path)
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    failure = _LOAD_ERRORS.get(path)
+    if failure is not None and failure[0] == signature:
+        return None
+    if signature is None:
+        _LOAD_ERRORS[path] = (None, "file not found")
         return None
     try:
         player = NeuralPlayer(path, **kwargs)
     except SystemExit as exc:
         # A checkpoint from an incompatible version, or torch missing.
-        _LOAD_ERRORS[path] = str(exc)
+        _LOAD_ERRORS[path] = (signature, str(exc))
         print(f"could not load {path}: {exc}")
         return None
-    _PLAYERS[path] = player
+    _PLAYERS[path] = (signature, player)
+    _LOAD_ERRORS.pop(path, None)
     print(f"loaded {path}: {player.description} on {player.device} "
           f"({player.steps} trained steps)")
     return player
@@ -149,4 +164,5 @@ def load_nn_model(path: str = "") -> bool:
 
 
 def load_error(path: str) -> Optional[str]:
-    return _LOAD_ERRORS.get(path)
+    failure = _LOAD_ERRORS.get(path)
+    return failure[1] if failure is not None else None

@@ -82,7 +82,7 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 61 tests; 11 skip without cshogi
+python3 -m unittest discover -s tests   # 92 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

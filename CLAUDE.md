@@ -167,7 +167,7 @@ MCTS の実効速度（`base`、CUDA、1プロセス）:
 python3 -m unittest discover -s tests
 ```
 
-80テスト。`tests/test_cshogi_backend.py` の11件は cshogi 未導入環境ではスキップされます。
+92テスト。cshogi 関連と PyTorch 必須のテストは未導入環境ではスキップされます。
 Colabでは必ず実行し、スキップされていないことを確認してください。
 
 ## 今後の強化ポイント

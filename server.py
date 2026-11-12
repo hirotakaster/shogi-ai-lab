@@ -12,6 +12,7 @@ from shogi_ai.nn_model import DEFAULT_SIMULATIONS, get_player, list_model_files
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
+WEB_ROOT = WEB.resolve()
 MODEL_DIR = ROOT / "data"
 
 #: ``find_spec`` tells us whether the neural engine is usable without paying
@@ -53,7 +54,12 @@ class Handler(SimpleHTTPRequestHandler):
         parsed = urlparse(path).path
         if parsed == "/":
             return str(WEB / "index.html")
-        return str(WEB / parsed.lstrip("/"))
+        candidate = (WEB / parsed.lstrip("/")).resolve()
+        if candidate != WEB_ROOT and WEB_ROOT not in candidate.parents:
+            # A crafted path (``/../server.py`` and friends) tried to escape
+            # the web root; answer as if the file did not exist.
+            return str(WEB / "__not_found__")
+        return str(candidate)
 
     def do_GET(self):
         if self.path.startswith("/api/state"):

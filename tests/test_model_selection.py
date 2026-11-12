@@ -4,7 +4,13 @@ import os
 import tempfile
 import unittest
 
-import torch
+try:
+    import torch
+except ImportError:
+    # PyTorch is an optional training dependency. Without it these tests
+    # skip, so the suite still runs green on the dependency-free setup
+    # the project promises for local play.
+    torch = None
 
 from shogi_ai import nn_model
 from shogi_ai.core import Position, position_from_sfen
@@ -28,6 +34,7 @@ def _write_legacy_checkpoint(path: str):
     torch.save({"model": {"unused": torch.zeros(1)}, "channels": 28}, path)
 
 
+@unittest.skipUnless(torch is not None, "PyTorch is not installed")
 class CheckpointTests(unittest.TestCase):
     def test_list_model_files_returns_only_pt_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -69,6 +76,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertIn("train_az", str(caught.exception))
 
 
+@unittest.skipUnless(torch is not None, "PyTorch is not installed")
 class NeuralPlayerTests(unittest.TestCase):
     def setUp(self):
         nn_model._PLAYERS.clear()
