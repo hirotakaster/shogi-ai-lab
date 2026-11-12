@@ -41,6 +41,23 @@ class SelfPlayConfig:
     preset: str = "base"
     device: str = "auto"
     fp16: Optional[bool] = None
+    #: "puct" (default) or "gumbel" (Gumbel AlphaZero at the root).
+    search_mode: str = "puct"
+    gumbel_candidates: int = 16
+    #: Playout-cap randomisation (KataGo): when > 0, only this fraction
+    #: of plies is searched with the full ``simulations`` budget; the
+    #: rest get ``playout_cap_simulations`` and are *played but not
+    #: recorded* -- a capped search's policy target is too noisy to
+    #: train on, so only full plies become training positions.  The
+    #: saving is spent on more games instead of more simulations.
+    playout_cap_fraction: float = 0.0
+    #: Budget for capped plies; 0 means a quarter of ``simulations``.
+    playout_cap_simulations: int = 0
+
+    def capped_simulations(self) -> int:
+        if self.playout_cap_simulations > 0:
+            return self.playout_cap_simulations
+        return max(8, self.simulations // 4)
 
 
 @dataclass
@@ -50,20 +67,29 @@ class GameSummary:
     plies: int = 0
     resigned: bool = False
     reason: str = ""
+    #: Plies played with a capped search (not recorded) under playout-cap
+    #: randomisation.
+    low_cap_plies: int = 0
 
 
 def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
     """Play a single self-play game and return its training records."""
     rng = np.random.default_rng(seed)
     backend = make_backend(config.backend)
+    if not 0.0 <= config.playout_cap_fraction <= 1.0:
+        raise ValueError("playout_cap_fraction must lie in [0, 1]")
+    cap_enabled = config.playout_cap_fraction > 0.0
     mcts = MCTS(evaluator, simulations=config.simulations,
-                batch_size=config.batch_size, add_noise=True, rng=rng)
+                batch_size=config.batch_size, add_noise=True, rng=rng,
+                search_mode=config.search_mode,
+                gumbel_candidates=config.gumbel_candidates)
 
     pending: List[dict] = []
     outcome: Optional[int] = None
     reason = ""
     resigned = False
     low_value_streak = 0
+    low_cap_plies = 0
     ply = 0
 
     while ply < config.max_moves:
@@ -74,7 +100,13 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             reason = "draw" if terminal == 0.0 else "mate"
             break
 
-        root = mcts.run(backend)
+        # Playout-cap randomisation decides this ply's budget before the
+        # search: full plies are recorded, capped plies only move the
+        # game forward.
+        is_full = (not cap_enabled) or float(rng.random()) < config.playout_cap_fraction
+        ply_simulations = (config.simulations if is_full
+                           else config.capped_simulations())
+        root = mcts.run(backend, simulations=ply_simulations)
         if not root.moves:
             outcome = -1 if backend.turn == BLACK else 1
             reason = "no legal move"
@@ -84,16 +116,21 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
         temperature = config.temperature if ply < config.temperature_moves else 0.0
         move, _counts = select_move(root, temperature, rng)
 
-        pending.append({
-            "sfen": backend.sfen(),
-            "turn": "black" if backend.turn == BLACK else "white",
-            "check": bool(backend.snapshot().in_check),
-            "policy": [[int(i), round(float(p), 6)] for i, p in policy_targets(root, backend.turn)],
-            "q": round(root_value, 4),
-            "ply": ply,
-        })
+        if is_full:
+            pending.append({
+                "sfen": backend.sfen(),
+                "turn": "black" if backend.turn == BLACK else "white",
+                "check": bool(backend.snapshot().in_check),
+                "policy": [[int(i), round(float(p), 6)] for i, p in policy_targets(root, backend.turn)],
+                "q": round(root_value, 4),
+                "ply": ply,
+            })
+        else:
+            low_cap_plies += 1
 
-        if config.resign_threshold > -1.0:
+        # A capped search's value is too noisy to resign on; only full
+        # plies count toward the streak.
+        if is_full and config.resign_threshold > -1.0:
             low_value_streak = low_value_streak + 1 if root_value < config.resign_threshold else 0
             if low_value_streak >= config.resign_patience:
                 outcome = -1 if backend.turn == BLACK else 1
@@ -119,7 +156,8 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             # target can come from the search instead of a forced draw.
             record["capped"] = True
     return GameSummary(records=pending, outcome=outcome, plies=ply,
-                       resigned=resigned, reason=reason)
+                       resigned=resigned, reason=reason,
+                       low_cap_plies=low_cap_plies)
 
 
 #: Per-process state, set once by :func:`_init_worker`.
@@ -156,7 +194,7 @@ def generate(config: SelfPlayConfig, games: int, out_path: str,
     seeds = [seed + i * 7919 for i in range(games)]
     started = time.time()
     stats = {"games": 0, "positions": 0, "black": 0, "white": 0, "draw": 0,
-             "resigned": 0, "plies": 0}
+             "resigned": 0, "plies": 0, "low_cap_plies": 0}
 
     # Write to a scratch file and rename only on success.  An interrupted run
     # must not leave a truncated -- or worse, empty -- file behind, because a
@@ -207,6 +245,7 @@ def _write(sink, summary: GameSummary, stats: dict) -> None:
     stats["games"] += 1
     stats["positions"] += len(summary.records)
     stats["plies"] += summary.plies
+    stats["low_cap_plies"] += summary.low_cap_plies
     stats["resigned"] += int(summary.resigned)
     stats["black" if summary.outcome > 0 else "white" if summary.outcome < 0 else "draw"] += 1
 
@@ -232,6 +271,14 @@ def main() -> None:
     parser.add_argument("--resign-threshold", type=float, default=-0.95,
                         help="-1.0 disables resignation")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
+    parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
+                        help="root search: PUCT, or Gumbel AlphaZero for low budgets")
+    parser.add_argument("--gumbel-candidates", type=int, default=16)
+    parser.add_argument("--playout-cap-fraction", type=float, default=0.0,
+                        help="fraction of plies searched at full budget; "
+                             "0 disables playout-cap randomisation")
+    parser.add_argument("--playout-cap-simulations", type=int, default=0,
+                        help="budget for capped plies; 0 means simulations // 4")
     parser.add_argument("--model", default="", help="checkpoint; omitted means a random network")
     parser.add_argument("--preset", default="base", help="architecture when --model is omitted")
     parser.add_argument("--device", default="auto")
@@ -250,12 +297,16 @@ def main() -> None:
         model=args.model or None,
         preset=args.preset,
         device=args.device,
+        search_mode=args.search_mode,
+        gumbel_candidates=args.gumbel_candidates,
+        playout_cap_fraction=args.playout_cap_fraction,
+        playout_cap_simulations=args.playout_cap_simulations,
     )
     stats = generate(config, args.games, args.out, processes=args.processes, seed=args.seed)
     print(f"wrote {stats['positions']} positions from {stats['games']} games "
           f"to {args.out} in {stats['seconds']}s "
           f"(B/W/D {stats['black']}/{stats['white']}/{stats['draw']}, "
-          f"resigned {stats['resigned']})")
+          f"resigned {stats['resigned']}, low-cap plies {stats['low_cap_plies']})")
 
 
 if __name__ == "__main__":

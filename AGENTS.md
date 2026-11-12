@@ -59,6 +59,24 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 - A self-play game cut off by the move cap is not a draw: its records carry
   `capped: true`, and `train_az` uses the search's root value `q` as their
   value target instead of the forced-draw outcome.
+- The search has two root modes (`MCTS(search_mode=...)`).  `puct` is the
+  default.  `gumbel` is Gumbel AlphaZero for low simulation budgets: the
+  top `gumbel_candidates` actions by `gumbel + log pi` are searched with
+  Sequential Halving, and the root's policy target / move distribution is
+  the improved policy `softmax(log pi + sigma(completed Q))` stored on
+  `Node.improved_policy`, not the visit counts.  Gumbel mode never also
+  applies Dirichlet noise (the Gumbel sample is the exploration), and
+  with `add_noise=False` it is deterministic.  Below the root it is
+  ordinary PUCT.
+- Self-play supports playout-cap randomisation (`--playout-cap-fraction`):
+  that fraction of plies is searched at the full budget and recorded;
+  the rest are played at `--playout-cap-simulations` (default a quarter
+  of the full budget) and are not recorded, because a capped search's
+  policy target is too noisy to train on.  Capped plies also never count
+  toward resignation.  Note the name overlap: a *record's* `capped: true`
+  still means the move-cap adjudication above, not a low-cap ply.
+- `MCTS.run(..., simulations=N)` overrides the budget for one call only;
+  playout-cap randomisation is built on it.
 - Shogi has no stalemate draw: a side with no legal move loses. `terminal_value()`
   returns `-1.0` for that, which is correct and is why a rook move that merely
   removes every legal reply is a winning move.
@@ -89,7 +107,7 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 99 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 118 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

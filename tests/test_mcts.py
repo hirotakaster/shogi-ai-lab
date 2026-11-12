@@ -230,5 +230,111 @@ class PolicyTargetTests(unittest.TestCase):
         self.assertEqual(policy_targets(Node(), 1), [])
 
 
+class GumbelSearchTests(unittest.TestCase):
+    def test_visits_match_the_simulation_budget(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=64, batch_size=8,
+                    search_mode="gumbel", add_noise=True,
+                    rng=np.random.default_rng(0))
+        root = mcts.run(backend)
+        self.assertEqual(int(root.visit_counts().sum()), 64)
+        self.assertEqual(mcts.simulations_done, 64)
+
+    def test_budget_smaller_than_the_candidate_count_still_works(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=8, batch_size=4,
+                    search_mode="gumbel", gumbel_candidates=16,
+                    add_noise=True, rng=np.random.default_rng(1))
+        root = mcts.run(backend)
+        self.assertEqual(int(root.visit_counts().sum()), 8)
+        self.assertAlmostEqual(float(root.improved_policy.sum()), 1.0, places=5)
+
+    def test_improved_policy_is_restricted_to_the_candidates(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=64, batch_size=8,
+                    search_mode="gumbel", gumbel_candidates=8,
+                    add_noise=True, rng=np.random.default_rng(0))
+        root = mcts.run(backend)
+        self.assertIsNotNone(root.improved_policy)
+        self.assertAlmostEqual(float(root.improved_policy.sum()), 1.0, places=5)
+        self.assertLessEqual(int((root.improved_policy > 0).sum()), 8)
+        # Moves outside the candidate set were never forced at the root,
+        # so they carry no visits either.
+        outside = root.improved_policy == 0
+        self.assertTrue(np.all(root.visit_counts()[outside] == 0))
+
+    def test_policy_targets_use_the_improved_policy(self):
+        backend = PurePythonBackend()
+        root = MCTS(uniform_evaluator, simulations=64, batch_size=8,
+                    search_mode="gumbel", add_noise=True,
+                    rng=np.random.default_rng(0)).run(backend)
+        targets = policy_targets(root, backend.turn)
+        self.assertAlmostEqual(sum(p for _i, p in targets), 1.0, places=5)
+        self.assertEqual(len(targets), int((root.improved_policy > 0).sum()))
+
+    def test_greedy_selection_takes_the_improved_argmax(self):
+        backend = PurePythonBackend()
+        root = MCTS(uniform_evaluator, simulations=64, batch_size=8,
+                    search_mode="gumbel", add_noise=True,
+                    rng=np.random.default_rng(0)).run(backend)
+        move, _counts = select_move(root, 0.0, np.random.default_rng(0))
+        self.assertEqual(move, root.moves[int(np.argmax(root.improved_policy))])
+
+    def test_deterministic_without_noise(self):
+        def run_once():
+            backend = PurePythonBackend()
+            return MCTS(uniform_evaluator, simulations=48, batch_size=8,
+                        search_mode="gumbel", add_noise=False,
+                        rng=np.random.default_rng(3)).run(backend)
+
+        first, second = run_once(), run_once()
+        np.testing.assert_allclose(first.improved_policy, second.improved_policy)
+        np.testing.assert_allclose(first.visit_counts(), second.visit_counts())
+
+    def test_priors_steer_the_improved_policy(self):
+        backend = PurePythonBackend()
+        _native, raw = backend.legal_moves()
+        favoured = policy_index(raw[3], backend.turn)
+        root = MCTS(BiasedEvaluator(favoured), simulations=128, batch_size=8,
+                    search_mode="gumbel", add_noise=False).run(backend)
+        self.assertEqual(int(np.argmax(root.improved_policy)), 3)
+
+    def test_forced_win_is_found_without_network_help(self):
+        backend = PurePythonBackend(_position_from_sfen(MATE_IN_ONE))
+        root = MCTS(uniform_evaluator, simulations=64, batch_size=8,
+                    search_mode="gumbel", add_noise=False).run(backend)
+        move, _counts = select_move(root, 0.0, np.random.default_rng(0))
+        self.assertIn(move.usi(), SearchTests._immediate_wins(backend))
+
+    def test_virtual_loss_is_fully_unwound(self):
+        backend = PurePythonBackend()
+        root = MCTS(uniform_evaluator, simulations=40, batch_size=8,
+                    search_mode="gumbel", add_noise=True,
+                    rng=np.random.default_rng(0)).run(backend)
+        self.assertEqual(float(np.abs(root.child_virtual).sum()), 0.0)
+
+    def test_search_leaves_the_board_untouched(self):
+        backend = PurePythonBackend()
+        before = backend.sfen()
+        MCTS(uniform_evaluator, simulations=48, batch_size=8,
+             search_mode="gumbel", add_noise=True,
+             rng=np.random.default_rng(0)).run(backend)
+        self.assertEqual(backend.sfen(), before)
+
+    def test_unknown_search_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            MCTS(uniform_evaluator, search_mode="banana")
+
+
+class SimulationOverrideTests(unittest.TestCase):
+    def test_run_simulations_override_spends_only_the_override(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=200, batch_size=8)
+        root = mcts.run(backend, simulations=24)
+        self.assertEqual(int(root.visit_counts().sum()), 24)
+        # The configured budget is untouched for the next call.
+        self.assertEqual(mcts.simulations, 200)
+
+
 if __name__ == "__main__":
     unittest.main()

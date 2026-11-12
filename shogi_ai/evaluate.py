@@ -24,15 +24,20 @@ class MctsPlayer:
     """Plays with MCTS over a policy/value network."""
 
     def __init__(self, evaluator, simulations: int = 200, batch_size: int = 16,
-                 name: str = "mcts"):
+                 name: str = "mcts", search_mode: str = "puct",
+                 gumbel_candidates: int = 16):
         self.evaluator = evaluator
         self.simulations = simulations
         self.batch_size = batch_size
         self.name = name
+        self.search_mode = search_mode
+        self.gumbel_candidates = gumbel_candidates
 
     def choose(self, backend, ply: int, temperature: float, rng):
         mcts = MCTS(self.evaluator, simulations=self.simulations,
-                    batch_size=self.batch_size, add_noise=False, rng=rng)
+                    batch_size=self.batch_size, add_noise=False, rng=rng,
+                    search_mode=self.search_mode,
+                    gumbel_candidates=self.gumbel_candidates)
         root = mcts.run(backend)
         if not root.moves:
             return None
@@ -148,12 +153,16 @@ def _build_player(spec: str, args, name: str):
         from .evaluator import UniformEvaluator
 
         return MctsPlayer(UniformEvaluator(), simulations=args.simulations,
-                          batch_size=args.batch_size, name="random-net")
+                          batch_size=args.batch_size, name="random-net",
+                          search_mode=args.search_mode,
+                          gumbel_candidates=args.gumbel_candidates)
     from .evaluator import load_evaluator
 
     evaluator = load_evaluator(spec, preset=args.preset, device=args.device)
     return MctsPlayer(evaluator, simulations=args.simulations,
-                      batch_size=args.batch_size, name=name)
+                      batch_size=args.batch_size, name=name,
+                      search_mode=args.search_mode,
+                      gumbel_candidates=args.gumbel_candidates)
 
 
 def main() -> None:
@@ -165,6 +174,9 @@ def main() -> None:
     parser.add_argument("--games", type=int, default=20)
     parser.add_argument("--simulations", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
+                        help="root search mode for both MCTS players")
+    parser.add_argument("--gumbel-candidates", type=int, default=16)
     parser.add_argument("--max-moves", type=int, default=320)
     parser.add_argument("--opening-moves", type=int, default=8)
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")

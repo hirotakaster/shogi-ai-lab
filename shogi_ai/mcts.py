@@ -27,6 +27,16 @@ DIRICHLET_ALPHA = 0.15
 DIRICHLET_EPSILON = 0.25
 #: Discourages two batched paths from picking the same edge.
 VIRTUAL_LOSS = 1.0
+#: Gumbel AlphaZero (Danihelka et al., 2022): the completed-Q transform
+#: ``sigma(q) = (C_VISIT + max visits) * C_SCALE * q``.  C_SCALE is tuned
+#: for values in [-1, 1]; with raw (unnormalised) Q this keeps the search
+#: scores on the same scale as the log-priors they are added to.
+GUMBEL_C_VISIT = 50.0
+GUMBEL_C_SCALE = 0.1
+#: Root actions considered by a Gumbel search.  Shogi's branching factor
+#: is large, but at a few hundred simulations only a handful of moves can
+#: be searched meaningfully; 16 is the paper's AlphaZero setting.
+GUMBEL_CANDIDATES = 16
 
 Evaluator = Callable[[np.ndarray], Tuple[np.ndarray, np.ndarray]]
 
@@ -34,7 +44,7 @@ Evaluator = Callable[[np.ndarray], Tuple[np.ndarray, np.ndarray]]
 class Node:
     __slots__ = ("moves", "raw_moves", "priors", "raw_priors", "child_visits",
                  "child_value", "child_virtual", "children", "visits",
-                 "expanded", "terminal")
+                 "expanded", "terminal", "improved_policy")
 
     def __init__(self):
         self.moves: List = []
@@ -53,6 +63,11 @@ class Node:
         self.expanded = False
         #: Set once a node is known to end the game, so it is never selected from.
         self.terminal: Optional[float] = None
+        #: Gumbel search only: the improved policy ``softmax(log pi +
+        #: sigma(completed Q))`` over the considered root actions.  When
+        #: present it, not the visit counts, is the policy target and the
+        #: distribution moves are selected from.
+        self.improved_policy: Optional[np.ndarray] = None
 
     def expand(self, moves: Sequence, raw_moves: Sequence, priors: np.ndarray) -> None:
         count = len(moves)
@@ -65,6 +80,7 @@ class Node:
         self.child_virtual = np.zeros(count, dtype=np.float32)
         self.children = [None] * count
         self.expanded = True
+        self.improved_policy = None
 
     def select(self) -> int:
         """Return the index of the edge with the highest PUCT score."""
@@ -106,6 +122,37 @@ def softmax_over_legal(logits: np.ndarray, indices: Sequence[int]) -> np.ndarray
     return (exp / total).astype(np.float32)
 
 
+def completed_qvalues(root: Node, fallback: float) -> np.ndarray:
+    """Each root action's Q, with unvisited actions filled by ``fallback``.
+
+    Gumbel AlphaZero scores actions by a *completed* Q: an action the
+    search never tried still needs a value, and the root's own value
+    estimate is the principled stand-in (it is what the network believed
+    before any action was searched).
+    """
+    if root.child_visits is None:
+        return np.zeros(0, dtype=np.float64)
+    visits = root.child_visits.astype(np.float64)
+    totals = root.child_value.astype(np.float64)
+    return np.where(visits > 0.0, totals / np.maximum(visits, 1e-8), fallback)
+
+
+def _sample_gumbel(rng: np.random.Generator, size: int) -> np.ndarray:
+    uniform = np.clip(rng.random(size), 1e-12, 1.0 - 1e-12)
+    return -np.log(-np.log(uniform))
+
+
+def gumbel_scores(root: Node, fallback: float, gumbel: np.ndarray,
+                  c_visit: float = GUMBEL_C_VISIT,
+                  c_scale: float = GUMBEL_C_SCALE) -> np.ndarray:
+    """``gumbel + log pi + sigma(completed Q)`` for every root action."""
+    priors = root.raw_priors if root.raw_priors is not None else root.priors
+    logits = np.log(np.clip(priors.astype(np.float64), 1e-12, None))
+    max_visits = float(root.child_visits.max()) if root.child_visits is not None else 0.0
+    sigma = (c_visit + max_visits) * c_scale
+    return gumbel + logits + sigma * completed_qvalues(root, fallback)
+
+
 class MCTS:
     """Run PUCT search over a mutable backend board.
 
@@ -121,12 +168,18 @@ class MCTS:
         batch_size: int = 16,
         add_noise: bool = False,
         rng: Optional[np.random.Generator] = None,
+        search_mode: str = "puct",
+        gumbel_candidates: int = GUMBEL_CANDIDATES,
     ):
+        if search_mode not in ("puct", "gumbel"):
+            raise ValueError(f"unknown search_mode {search_mode!r}")
         self.evaluator = evaluator
         self.simulations = simulations
         self.batch_size = max(1, batch_size)
         self.add_noise = add_noise
         self.rng = rng or np.random.default_rng()
+        self.search_mode = search_mode
+        self.gumbel_candidates = max(1, gumbel_candidates)
         self.last_root: Optional[Node] = None
         #: Subtree retained by :meth:`advance`, consumed by the next run.
         self._pending_root: Optional[Node] = None
@@ -136,14 +189,18 @@ class MCTS:
         self.elapsed = 0.0
 
     # ------------------------------------------------------------------
-    def run(self, backend, time_limit: Optional[float] = None) -> Node:
+    def run(self, backend, time_limit: Optional[float] = None,
+            simulations: Optional[int] = None) -> Node:
         """Search from ``backend``'s current position and return the root.
 
         ``time_limit`` caps the wall-clock budget in seconds.  It is checked
         between batches, so a search can overshoot by roughly the cost of one
         batch; callers that must not exceed a hard deadline should leave
-        headroom.
+        headroom.  ``simulations`` overrides the configured budget for this
+        call only -- playout-cap randomisation in self-play uses it to give
+        most plies a small budget and a few plies the full one.
         """
+        budget = self.simulations if simulations is None else max(0, simulations)
         self.evaluated = 0
         self.elapsed = 0.0
         started = time.time()
@@ -152,6 +209,7 @@ class MCTS:
         # else starts a fresh tree.
         root = self._pending_root if self._pending_root is not None else Node()
         self._pending_root = None
+        root.improved_policy = None
         if root.terminal is not None:
             self.root_value = root.terminal
             self.simulations_done = 0
@@ -169,12 +227,18 @@ class MCTS:
                 self.elapsed = time.time() - started
                 self.last_root = root
                 return root
+        if self.search_mode == "gumbel":
+            done = self._run_gumbel(root, backend, budget, started, time_limit)
+            self.simulations_done = done
+            self.elapsed = time.time() - started
+            self.last_root = root
+            return root
         if self.add_noise:
             self._apply_root_noise(root)
 
         done = 0
-        while done < self.simulations:
-            wanted = min(self.batch_size, self.simulations - done)
+        while done < budget:
+            wanted = min(self.batch_size, budget - done)
             paths, values = self._simulate_batch(root, backend, wanted)
             if not paths:
                 break
@@ -190,8 +254,100 @@ class MCTS:
         return root
 
     # ------------------------------------------------------------------
-    def _simulate_batch(self, root: Node, backend, wanted: int):
-        """Descend ``wanted`` times, evaluate the new leaves in one batch."""
+    def _run_gumbel(self, root: Node, backend, budget: int,
+                    started: float, time_limit: Optional[float]) -> int:
+        """Gumbel AlphaZero at the root: Sequential Halving over top moves.
+
+        Only the ``gumbel_candidates`` actions with the highest
+        ``gumbel + log pi`` are considered.  The budget is spent in
+        halving phases -- every survivor gets an equal share, then the
+        worse half by ``gumbel + log pi + sigma(completed Q)`` is dropped
+        -- and any remainder goes to the final winner.  Exploration comes
+        from the Gumbel sample itself, so Dirichlet noise is *not* also
+        applied; with ``add_noise`` off the sample is zero and the search
+        is deterministic, which is what evaluation play wants.
+
+        Below the root the search is ordinary PUCT: the guarantee the
+        paper needs is about how the root budget is allocated and how the
+        improved policy is read off, both of which live here.
+        """
+        count = len(root.moves)
+        fallback = float(self.root_value)
+        if count == 0 or budget <= 0:
+            root.improved_policy = (root.raw_priors.copy()
+                                    if root.raw_priors is not None else None)
+            return 0
+        priors = root.raw_priors if root.raw_priors is not None else root.priors
+        logits = np.log(np.clip(priors.astype(np.float64), 1e-12, None))
+        gumbel = (_sample_gumbel(self.rng, count) if self.add_noise
+                  else np.zeros(count, dtype=np.float64))
+        considered = int(min(self.gumbel_candidates, count))
+        candidates = [int(i) for i in
+                      np.argsort(-(gumbel + logits))[:considered]]
+
+        done = 0
+        remaining = budget
+        while len(candidates) > 1 and remaining > 0:
+            phases_left = int(math.ceil(math.log2(len(candidates))))
+            per_candidate = max(1, remaining // (len(candidates) * phases_left))
+            for action in list(candidates):
+                if remaining <= 0:
+                    break
+                spent = self._run_forced(root, backend, action,
+                                         min(per_candidate, remaining))
+                done += spent
+                remaining -= spent
+                if time_limit is not None and time.time() - started >= time_limit:
+                    remaining = 0
+                    break
+            if remaining <= 0:
+                break
+            scores = gumbel_scores(root, fallback, gumbel)
+            ranked = sorted(candidates, key=lambda a: scores[a], reverse=True)
+            candidates = ranked[: int(math.ceil(len(ranked) / 2))]
+        if remaining > 0 and candidates:
+            scores = gumbel_scores(root, fallback, gumbel)
+            winner = max(candidates, key=lambda a: scores[a])
+            spent = self._run_forced(root, backend, winner, remaining)
+            done += spent
+            remaining -= spent
+
+        # The improved policy: softmax of log pi + sigma(completed Q),
+        # restricted to the considered actions (others get exactly zero,
+        # which is the point -- at low budgets the target should not
+        # pretend unsearched moves were evaluated).
+        scores = gumbel_scores(root, fallback, np.zeros(count, dtype=np.float64))
+        improved = np.full(count, -np.inf, dtype=np.float64)
+        initial = np.argsort(-(gumbel + logits))[:considered]
+        improved[initial] = scores[initial]
+        peak = float(np.max(improved[np.isfinite(improved)]))
+        exp = np.where(np.isfinite(improved), np.exp(improved - peak), 0.0)
+        total = float(exp.sum())
+        root.improved_policy = (exp / total).astype(np.float32) if total > 0 else priors.copy()
+        return done
+
+    def _run_forced(self, root: Node, backend, action: int, budget: int) -> int:
+        """Run ``budget`` simulations whose first edge is ``action``."""
+        done = 0
+        while done < budget:
+            wanted = min(self.batch_size, budget - done)
+            paths, values = self._simulate_batch(root, backend, wanted,
+                                                 forced_root_action=action)
+            if not paths:
+                break
+            for path, value in zip(paths, values):
+                self._backup(path, value)
+            done += len(paths)
+        return done
+
+    # ------------------------------------------------------------------
+    def _simulate_batch(self, root: Node, backend, wanted: int,
+                        forced_root_action: Optional[int] = None):
+        """Descend ``wanted`` times, evaluate the new leaves in one batch.
+
+        ``forced_root_action`` pins the first edge of every path; below
+        the root (and everywhere, when it is None) selection is PUCT.
+        """
         paths: List[List[Tuple[Node, int]]] = []
         values: List[float] = []
         # Leaves needing a forward pass, de-duplicated by node identity so that
@@ -206,7 +362,10 @@ class MCTS:
             pushed = 0
             value: Optional[float] = None
             while True:
-                action = node.select()
+                if node is root and forced_root_action is not None:
+                    action = forced_root_action
+                else:
+                    action = node.select()
                 path.append((node, action))
                 node.child_virtual[action] += VIRTUAL_LOSS
                 backend.push(node.moves[action])
@@ -310,8 +469,22 @@ class MCTS:
 
 
 def select_move(root: Node, temperature: float, rng: np.random.Generator):
-    """Pick a move from the root's visit counts at the given temperature."""
+    """Pick a move at the given temperature.
+
+    PUCT roots are sampled from their visit counts.  A Gumbel root
+    carries an improved policy instead: greedy play takes its argmax
+    and tempered play samples from it sharpened / flattened by the
+    temperature, which is the distribution self-play should explore.
+    """
     counts = root.visit_counts() if root.child_visits is not None else np.zeros(0)
+    improved = getattr(root, "improved_policy", None)
+    if improved is not None and len(root.moves) and float(improved.sum()) > 0.0:
+        if temperature <= 1e-6:
+            return root.moves[int(np.argmax(improved))], counts
+        scaled = improved.astype(np.float64) ** (1.0 / temperature)
+        total = scaled.sum()
+        probs = scaled / total if total > 0 else np.full(len(root.moves), 1.0 / len(root.moves))
+        return root.moves[int(rng.choice(len(root.moves), p=probs))], counts
     if counts.size == 0 or counts.sum() == 0:
         return (root.moves[0] if root.moves else None), counts
     if temperature <= 1e-6:
@@ -323,11 +496,20 @@ def select_move(root: Node, temperature: float, rng: np.random.Generator):
 
 
 def policy_targets(root: Node, turn: int) -> List[Tuple[int, float]]:
-    """Normalised visit counts as ``(policy_index, probability)`` pairs.
+    """The policy target as ``(policy_index, probability)`` pairs.
 
-    This is the policy target stored in the training records: a sparse
-    distribution over the moves the search actually considered.
+    For a PUCT root this is the normalised visit distribution; for a
+    Gumbel root it is the improved policy, which is the distribution
+    that search actually guarantees improvement over the network's.
+    Either way it is sparse: only moves the search considered appear.
     """
+    improved = getattr(root, "improved_policy", None)
+    if improved is not None:
+        pairs = []
+        for move, prob in zip(root.raw_moves, improved):
+            if prob > 0.0:
+                pairs.append((policy_index(move, turn), float(prob)))
+        return pairs
     counts = root.visit_counts() if root.child_visits is not None else np.zeros(0)
     total = float(counts.sum())
     if total <= 0.0:

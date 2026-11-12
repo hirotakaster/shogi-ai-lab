@@ -107,6 +107,12 @@ def main() -> None:
     parser.add_argument("--resign-threshold", type=float, default=-0.95)
     parser.add_argument("--processes", type=int, default=1, help="self-play workers")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
+    parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
+                        help="self-play root search mode")
+    parser.add_argument("--gumbel-candidates", type=int, default=16)
+    parser.add_argument("--playout-cap-fraction", type=float, default=0.0,
+                        help="fraction of self-play plies at full budget; 0 disables")
+    parser.add_argument("--playout-cap-simulations", type=int, default=0)
 
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--train-batch-size", type=int, default=256)
@@ -190,6 +196,10 @@ def main() -> None:
                     "--resign-threshold", str(args.resign_threshold),
                     "--processes", str(args.processes),
                     "--backend", args.backend,
+                    "--search-mode", args.search_mode,
+                    "--gumbel-candidates", str(args.gumbel_candidates),
+                    "--playout-cap-fraction", str(args.playout_cap_fraction),
+                    "--playout-cap-simulations", str(args.playout_cap_simulations),
                     "--preset", args.preset,
                     "--device", args.device,
                     "--seed", str(args.seed + round_number * 104729),

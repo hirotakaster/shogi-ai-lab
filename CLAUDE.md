@@ -17,7 +17,7 @@ shogi_ai/
   backends.py     PurePythonBackend（依存ゼロ）と CshogiBackend（高速）
   network.py      ResNet policy/value ネット唯一の定義とチェックポイント入出力
   evaluator.py    バッチ推論ラッパー（CUDA / MPS / CPU）
-  mcts.py         PUCT探索、virtual lossによる葉のバッチ収集
+  mcts.py         PUCT探索／Gumbel AlphaZero（search_mode）、virtual lossによる葉のバッチ収集
   selfplay_az.py  MCTS自己対局 → 学習レコード生成
   train_az.py     policy + value 同時学習、リプレイバッファ
   evaluate.py     世代間のゲーティング対戦、従来型エンジンとの比較
@@ -167,7 +167,7 @@ MCTS の実効速度（`base`、CUDA、1プロセス）:
 python3 -m unittest discover -s tests
 ```
 
-99テスト。cshogi 関連と PyTorch 必須のテストは未導入環境ではスキップされます。
+118テスト。cshogi 関連と PyTorch 必須のテストは未導入環境ではスキップされます。
 Colabでは必ず実行し、スキップされていないことを確認してください。
 
 ## 今後の強化ポイント
