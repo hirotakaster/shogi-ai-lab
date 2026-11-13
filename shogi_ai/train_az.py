@@ -182,6 +182,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=2e-3)
+    parser.add_argument("--grad-clip", type=float, default=5.0,
+                        help="max gradient norm; tighten (e.g. 1.0) when finetuning")
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--value-weight", type=float, default=1.0)
     parser.add_argument("--val-fraction", type=float, default=0.05)
@@ -283,7 +285,7 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()

@@ -49,6 +49,49 @@ def usable_data(path: Path) -> bool:
     return False
 
 
+def training_regime(args, has_champion: bool):
+    """Return ``(lr, epochs)`` for this round's training.
+
+    Training *from* an existing champion is a different job from training
+    from scratch: the from-scratch rate (2e-3) applied to a trained
+    network on a small round of new data mostly undoes the champion --
+    the first Colab run's validation loss spiked past 40 mid-round for
+    exactly this reason.  ``--round-lr`` / ``--round-epochs`` set the
+    finetuning regime; 0 keeps the from-scratch values.
+    """
+    if has_champion:
+        lr = args.round_lr if args.round_lr > 0 else args.lr
+        epochs = args.round_epochs if args.round_epochs > 0 else args.epochs
+        return lr, epochs
+    return args.lr, args.epochs
+
+
+def build_buffer(initial_data, data_dir: Path, latest: Optional[Path],
+                 latest_repeat: int) -> List[str]:
+    """Assemble the training file list for a round.
+
+    Everything generated so far is replayed (subject to train_az's
+    position cap): the initial bootstrap data when supplied, then every
+    non-empty self-play file.  The newest round's file is repeated
+    ``latest_repeat`` times so fresh self-play data is not drowned by
+    the accumulated buffer -- with one round of ~25k positions against
+    100k+ of history, a repeat of 2-3 gives the new data real weight
+    without discarding the replay's stabilising effect.  Repetition is
+    skipped when the newest file is the *only* data (epochs already
+    control the passes over it) and when it is the initial file itself.
+    """
+    buffer: List[str] = []
+    if initial_data is not None:
+        buffer.append(str(initial_data))
+    buffer += [str(p) for p in sorted(data_dir.glob("selfplay_*.jsonl"))
+               if count_records(p) > 0]
+    if (latest_repeat > 1 and latest is not None
+            and (initial_data is None or latest != initial_data)
+            and str(latest) in buffer and len(set(buffer)) > 1):
+        buffer += [str(latest)] * (latest_repeat - 1)
+    return buffer
+
+
 def _load_history(path: Path) -> List[dict]:
     """Read the round history, tolerating a truncated file."""
     if not path.exists():
@@ -120,6 +163,17 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--train-batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=2e-3)
+    parser.add_argument("--round-lr", type=float, default=0.0,
+                        help="learning rate when training from an existing "
+                             "champion (finetuning); 0 means use --lr")
+    parser.add_argument("--round-epochs", type=int, default=0,
+                        help="epochs when training from an existing champion; "
+                             "0 means use --epochs")
+    parser.add_argument("--latest-repeat", type=int, default=1,
+                        help="repeat the newest round's data file this many "
+                             "times in the training buffer")
+    parser.add_argument("--grad-clip", type=float, default=5.0,
+                        help="gradient-norm clip passed to training")
     parser.add_argument("--max-positions", type=int, default=400_000,
                         help="replay buffer cap across rounds")
     parser.add_argument("--preset", default="base")
@@ -221,20 +275,22 @@ def main() -> None:
             print(f"reusing existing {candidate}")
         else:
             # Train on everything generated so far, capped to the buffer size.
-            buffer: List[str] = []
-            if initial_data is not None:
-                buffer.append(str(initial_data))
-            buffer += [str(p) for p in sorted(data_dir.glob("selfplay_*.jsonl"))
-                       if count_records(p) > 0]
+            buffer = build_buffer(initial_data, data_dir, data_path,
+                                  args.latest_repeat)
             if not buffer:
                 raise SystemExit("no training data available for this round")
+            lr, epochs = training_regime(args, current is not None)
+            regime = "finetune" if current is not None else "from scratch"
+            print(f"training regime: {regime} (lr {lr:g}, {epochs} epochs, "
+                  f"{len(buffer)} data files)")
             cmd = [
                 sys.executable, "-m", "shogi_ai.train_az",
                 "--data", *buffer,
                 "--max-positions", str(args.max_positions),
-                "--epochs", str(args.epochs),
+                "--epochs", str(epochs),
                 "--batch-size", str(args.train_batch_size),
-                "--lr", str(args.lr),
+                "--lr", str(lr),
+                "--grad-clip", str(args.grad_clip),
                 "--preset", args.preset,
                 "--workers", str(args.workers),
                 "--device", args.device,
@@ -261,6 +317,8 @@ def main() -> None:
                 "--games", str(args.eval_games),
                 "--simulations", str(eval_simulations),
                 "--batch-size", str(args.batch_size),
+                "--search-mode", args.search_mode,
+                "--gumbel-candidates", str(args.gumbel_candidates),
                 "--max-moves", str(args.max_moves),
                 "--backend", args.backend,
                 "--preset", args.preset,

@@ -95,6 +95,15 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   `evaluator.BatchingEvaluator` (one background thread owns the real
   evaluator, so a CUDA context stays single-threaded).  This is the
   single-process path only; multiprocess workers are unchanged.
+- Rounds that train *from* a champion use the finetuning regime
+  (`--round-lr` / `--round-epochs` in `learn_loop`) when set, and
+  `--latest-repeat N` oversamples the newest round's data in the
+  replay buffer.  Both exist because of what the first Colab run
+  measured (see the production recipe below): a 20-game round is
+  ~1.3k positions and ~20 optimiser steps, and training that at the
+  from-scratch rate of 2e-3 spiked the validation policy loss past 40
+  mid-round -- the candidates came out as champion-plus-noise and
+  both rounds were rejected at the gate (0.400, 0.250).
 - Shogi has no stalemate draw: a side with no legal move loses. `terminal_value()`
   returns `-1.0` for that, which is correct and is why a rook move that merely
   removes every legal reply is a winning move.
@@ -120,10 +129,58 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   - entering-king declaration and pawn-drop mate,
   - the USI engine protocol.
 
+## Production-Scale Recipe (Colab)
+
+Measured on the first full run (Batch 4 code, A100-80GB, 12 vCPUs):
+self-play at 200 simulations with Gumbel + cap 0.25 ran at ~960
+games/hour across 12 processes and recorded ~65 positions per game.
+A 20-game round is therefore only ~1.3k positions -- two orders of
+magnitude below what a round needs.  Budget from positions, not games:
+**at least ~25k recorded positions per round**, i.e. 400+ games.
+
+The planned production GPU is an **L4 (24 GB)**, which is ample for
+this project: the base network is a few million parameters, training
+at batch 256 with AMP stays far below 24 GB, and the replay buffer
+lives on disk / host RAM, not in VRAM.  What changes versus the A100
+measurements is speed, not feasibility: expect training steps to run
+roughly 1.5-2x slower, while self-play is CPU-bound (cshogi + the
+Python search tree), so its throughput tracks the *host vCPU count*,
+not the GPU.  Check `nproc` on the L4 runtime first and set
+`--processes` to vCPUs - 2; if the runtime has fewer vCPUs than the
+A100 instance had, games/hour drops in proportion and the round size
+should be trimmed before the simulations are.
+
+```bash
+# Bigger bootstrap (CPU-cheap; ~38k positions at 300 games)
+python -m shogi_ai.self_play --games 300 --depth 2 --processes 10 \
+    --out data/initial_selfplay.jsonl
+
+# One command for the whole run; round 1 pretrains from the bootstrap
+# inside the loop, later rounds finetune.  The loop is resumable, so
+# this can span several Colab sessions -- just rerun it.
+python -m shogi_ai.learn_loop \
+    --initial-data data/initial_selfplay.jsonl \
+    --rounds 6 --games 400 \
+    --simulations 160 --search-mode gumbel --playout-cap-fraction 0.3 \
+    --batch-size 32 --processes 10 --backend cshogi \
+    --epochs 4 --lr 2e-3 \
+    --round-lr 5e-4 --round-epochs 2 --latest-repeat 2 --grad-clip 1.0 \
+    --eval-games 40 --eval-simulations 128 --gate 0.55 \
+    --max-positions 600000
+```
+
+Expected wall time on the A100 instance was roughly 5-7 hours for
+all six rounds (self-play ~2.5h, training ~1.5h, gating the rest); on
+an L4, budget ~1.5x that, mostly in training and gating.  Start with
+`--rounds 3` and extend by rerunning with a larger `--rounds` if the
+session budget is tight.  Judge progress by the gate scores and by a
+fixed side match against the depth-3 heuristic engine -- the first
+run's champion scored 0.200 there, which is the number to beat first.
+
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 129 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 137 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```
