@@ -66,6 +66,11 @@ def training_regime(args, has_champion: bool):
     return args.lr, args.epochs
 
 
+def evaluation_processes(args) -> int:
+    """Workers for the gating match: --eval-processes, else --processes."""
+    return args.eval_processes if args.eval_processes > 0 else args.processes
+
+
 def build_buffer(initial_data, data_dir: Path, latest: Optional[Path],
                  latest_repeat: int) -> List[str]:
     """Assemble the training file list for a round.
@@ -185,6 +190,8 @@ def main() -> None:
                         help="score the challenger must reach to be promoted")
     parser.add_argument("--eval-simulations", type=int, default=0,
                         help="defaults to --simulations")
+    parser.add_argument("--eval-processes", type=int, default=0,
+                        help="gating match workers; 0 reuses --processes")
 
     parser.add_argument("--initial-data", default="",
                         help="existing JSONL used for round 1 instead of self-play")
@@ -315,6 +322,7 @@ def main() -> None:
                 "--challenger", str(candidate),
                 "--champion", str(current),
                 "--games", str(args.eval_games),
+                "--processes", str(evaluation_processes(args)),
                 "--simulations", str(eval_simulations),
                 "--batch-size", str(args.batch_size),
                 "--search-mode", args.search_mode,

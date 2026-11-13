@@ -95,6 +95,14 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   `evaluator.BatchingEvaluator` (one background thread owns the real
   evaluator, so a CUDA context stays single-threaded).  This is the
   single-process path only; multiprocess workers are unchanged.
+- Gating matches parallelise the same way self-play does
+  (`evaluate --processes N`; `learn_loop --eval-processes` defaults to
+  the self-play `--processes`).  A match game is seeded by
+  (seed, game index) alone and the challenger always takes Black in
+  even-indexed games, so which worker plays a game cannot change its
+  outcome -- only the order results are tallied in.  Players are built
+  per worker from their spec strings; a loaded network is never handed
+  to another process.
 - Rounds that train *from* a champion use the finetuning regime
   (`--round-lr` / `--round-epochs` in `learn_loop`) when set, and
   `--latest-repeat N` oversamples the newest round's data in the
@@ -180,7 +188,7 @@ run's champion scored 0.200 there, which is the number to beat first.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 137 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 143 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```
