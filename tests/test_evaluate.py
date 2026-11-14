@@ -87,6 +87,45 @@ class ParallelMatchTests(unittest.TestCase):
         self.assertEqual(result.plies, expected.plies)
 
 
+class NoisyMatchTests(unittest.TestCase):
+    """Root noise in the gate: a noisy match must still be reproducible
+    from (seed, game index) alone, and parallel play must agree with
+    sequential play -- otherwise the noise would make gating flaky
+    instead of merely discriminating.
+
+    Background: the 2026-11-13 production round 1 gate scored exactly
+    0.500 with the result alternating every game -- with add_noise off,
+    play after the 8 opening plies is deterministic, so two near-identical
+    nets replay the same line and the colour, not the strength, decides.
+    """
+
+    def test_noisy_game_depends_only_on_seed_and_index(self):
+        args = _args(add_noise=True)
+        first = _sequential_outcomes(args, 2)
+        second = _sequential_outcomes(args, 2)
+        self.assertEqual(first, second)
+
+    def test_parallel_noisy_match_tallies_the_same_games(self):
+        args = _args(add_noise=True)
+        outcomes = _sequential_outcomes(args, args.games)
+        expected = MatchResult()
+        for index, (outcome, plies) in enumerate(outcomes):
+            _record(expected, index, outcome, plies)
+
+        result = play_match_parallel("random", "random", args,
+                                     games=args.games, processes=2, verbose=False)
+        self.assertEqual(result.games, expected.games)
+        self.assertEqual(result.wins, expected.wins)
+        self.assertEqual(result.losses, expected.losses)
+        self.assertEqual(result.draws, expected.draws)
+        self.assertEqual(result.plies, expected.plies)
+
+    def test_noise_flag_reaches_the_player(self):
+        args = _args(add_noise=True)
+        self.assertTrue(_build_player("random", args, "challenger").add_noise)
+        self.assertFalse(_build_player("random", _args(), "challenger").add_noise)
+
+
 class EvaluationProcessesTests(unittest.TestCase):
     def test_explicit_value_wins(self):
         args = SimpleNamespace(eval_processes=3, processes=12)

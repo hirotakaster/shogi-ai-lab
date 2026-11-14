@@ -192,6 +192,12 @@ def main() -> None:
                         help="defaults to --simulations")
     parser.add_argument("--eval-processes", type=int, default=0,
                         help="gating match workers; 0 reuses --processes")
+    parser.add_argument("--eval-add-noise", action="store_true",
+                        help="root noise in the gating match, so near-identical "
+                             "nets can diverge instead of replaying the same "
+                             "deterministic line (see AGENTS.md)")
+    parser.add_argument("--eval-opening-moves", type=int, default=8,
+                        help="temperature-1.0 opening plies in the gating match")
 
     parser.add_argument("--initial-data", default="",
                         help="existing JSONL used for round 1 instead of self-play")
@@ -328,11 +334,14 @@ def main() -> None:
                 "--search-mode", args.search_mode,
                 "--gumbel-candidates", str(args.gumbel_candidates),
                 "--max-moves", str(args.max_moves),
+                "--opening-moves", str(args.eval_opening_moves),
                 "--backend", args.backend,
                 "--preset", args.preset,
                 "--device", args.device,
                 "--seed", str(args.seed + round_number * 31),
             ]
+            if args.eval_add_noise:
+                cmd.append("--add-noise")
             match = subprocess.run(cmd, cwd=root, check=True,
                                    capture_output=True, text=True)
             print(match.stdout.strip())

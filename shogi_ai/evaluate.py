@@ -27,17 +27,18 @@ class MctsPlayer:
 
     def __init__(self, evaluator, simulations: int = 200, batch_size: int = 16,
                  name: str = "mcts", search_mode: str = "puct",
-                 gumbel_candidates: int = 16):
+                 gumbel_candidates: int = 16, add_noise: bool = False):
         self.evaluator = evaluator
         self.simulations = simulations
         self.batch_size = batch_size
         self.name = name
         self.search_mode = search_mode
         self.gumbel_candidates = gumbel_candidates
+        self.add_noise = add_noise
 
     def choose(self, backend, ply: int, temperature: float, rng):
         mcts = MCTS(self.evaluator, simulations=self.simulations,
-                    batch_size=self.batch_size, add_noise=False, rng=rng,
+                    batch_size=self.batch_size, add_noise=self.add_noise, rng=rng,
                     search_mode=self.search_mode,
                     gumbel_candidates=self.gumbel_candidates)
         root = mcts.run(backend)
@@ -177,14 +178,16 @@ def _build_player(spec: str, args, name: str):
         return MctsPlayer(UniformEvaluator(), simulations=args.simulations,
                           batch_size=args.batch_size, name="random-net",
                           search_mode=args.search_mode,
-                          gumbel_candidates=args.gumbel_candidates)
+                          gumbel_candidates=args.gumbel_candidates,
+                          add_noise=getattr(args, "add_noise", False))
     from .evaluator import load_evaluator
 
     evaluator = load_evaluator(spec, preset=args.preset, device=args.device)
     return MctsPlayer(evaluator, simulations=args.simulations,
                       batch_size=args.batch_size, name=name,
                       search_mode=args.search_mode,
-                      gumbel_candidates=args.gumbel_candidates)
+                      gumbel_candidates=args.gumbel_candidates,
+                      add_noise=getattr(args, "add_noise", False))
 
 
 #: Per-process state for the parallel match, set by :func:`_init_match_worker`.
@@ -255,6 +258,11 @@ def main() -> None:
     parser.add_argument("--gumbel-candidates", type=int, default=16)
     parser.add_argument("--max-moves", type=int, default=320)
     parser.add_argument("--opening-moves", type=int, default=8)
+    parser.add_argument("--add-noise", action="store_true",
+                        help="per-game root noise in the gating match "
+                             "(Gumbel sample / Dirichlet noise, seeded by "
+                             "seed + game index, so a match stays "
+                             "reproducible and parallel-invariant)")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
     parser.add_argument("--preset", default="base")
     parser.add_argument("--device", default="auto")

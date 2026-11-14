@@ -102,7 +102,17 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   even-indexed games, so which worker plays a game cannot change its
   outcome -- only the order results are tallied in.  Players are built
   per worker from their spec strings; a loaded network is never handed
-  to another process.
+  to another process.  With `--add-noise` off (the default) the gate is
+  deterministic after the 8 temperature-1.0 opening plies, which the
+  2026-11-13 production round 1 exposed as a flaw: the gate scored
+  exactly 0.500 with the result alternating every game, i.e. the
+  colour, not the strength, decided all 40 games between two
+  near-identical nets.  `evaluate --add-noise` / `learn_loop
+  --eval-add-noise` turns on per-game root noise (Gumbel sample in
+  gumbel mode, Dirichlet noise in puct mode), drawn from the same
+  per-game RNG, so a noisy match stays reproducible and
+  parallel-invariant while near-identical nets can diverge;
+  `--eval-opening-moves` widens the temperature-1.0 opening instead.
 - Rounds that train *from* a champion use the finetuning regime
   (`--round-lr` / `--round-epochs` in `learn_loop`) when set, and
   `--latest-repeat N` oversamples the newest round's data in the
