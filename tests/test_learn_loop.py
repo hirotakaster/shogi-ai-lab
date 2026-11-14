@@ -79,6 +79,7 @@ class _Args:
     epochs = 4
     round_lr = 0.0
     round_epochs = 0
+    round_max_steps = 0
 
 
 class TrainingRegimeTests(unittest.TestCase):
@@ -90,19 +91,33 @@ class TrainingRegimeTests(unittest.TestCase):
 
         args = _Args()
         args.round_lr, args.round_epochs = 5e-4, 2
-        self.assertEqual(training_regime(args, has_champion=False), (2e-3, 4))
+        self.assertEqual(training_regime(args, has_champion=False), (2e-3, 4, 0))
 
     def test_champion_uses_round_values_when_set(self):
         from shogi_ai.learn_loop import training_regime
 
         args = _Args()
         args.round_lr, args.round_epochs = 5e-4, 2
-        self.assertEqual(training_regime(args, has_champion=True), (5e-4, 2))
+        self.assertEqual(training_regime(args, has_champion=True), (5e-4, 2, 0))
 
     def test_champion_falls_back_when_round_values_unset(self):
         from shogi_ai.learn_loop import training_regime
 
-        self.assertEqual(training_regime(_Args(), has_champion=True), (2e-3, 4))
+        self.assertEqual(training_regime(_Args(), has_champion=True), (2e-3, 4, 0))
+
+    def test_champion_uses_step_cap_when_set(self):
+        from shogi_ai.learn_loop import training_regime
+
+        args = _Args()
+        args.round_max_steps = 800
+        self.assertEqual(training_regime(args, has_champion=True), (2e-3, 4, 800))
+
+    def test_from_scratch_never_uses_the_step_cap(self):
+        from shogi_ai.learn_loop import training_regime
+
+        args = _Args()
+        args.round_max_steps = 800
+        self.assertEqual(training_regime(args, has_champion=False), (2e-3, 4, 0))
 
 
 class BuildBufferTests(unittest.TestCase):

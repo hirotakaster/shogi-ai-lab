@@ -173,6 +173,19 @@ class RandomMirrorDataset:
         return planes, policy_target, value_target
 
 
+def planned_steps(epochs: int, batches_per_epoch: int, max_steps: int) -> int:
+    """Optimiser steps a run will take, honouring the step cap.
+
+    The OneCycle schedule is sized from this, so a capped run still gets
+    a complete warm-up-and-decay cycle inside its budget instead of
+    being cut off mid-ramp.
+    """
+    total = max(1, epochs * max(1, batches_per_epoch))
+    if max_steps > 0:
+        total = min(total, max_steps)
+    return total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train the policy/value network.")
     parser.add_argument("--data", nargs="+", default=["data/selfplay_az.jsonl"],
@@ -180,6 +193,10 @@ def main() -> None:
     parser.add_argument("--max-positions", type=int, default=0,
                         help="replay buffer cap; 0 keeps everything")
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--max-steps", type=int, default=0,
+                        help="cap the optimiser steps taken in this run; "
+                             "0 runs the full epochs. Keeps a round's "
+                             "training fixed-size as the replay buffer grows.")
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--grad-clip", type=float, default=5.0,
@@ -250,7 +267,9 @@ def main() -> None:
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                   weight_decay=args.weight_decay)
-    total_steps = max(1, args.epochs * max(1, len(train_loader)))
+    total_steps = planned_steps(args.epochs, len(train_loader), args.max_steps)
+    if args.max_steps > 0 and total_steps < args.epochs * max(1, len(train_loader)):
+        print(f"step cap {args.max_steps}: this run takes {total_steps} steps")
     # OneCycleLR needs both of its phases to contain at least one step, which a
     # very small dataset cannot supply; a constant rate is fine at that size.
     if total_steps >= 8:
@@ -266,7 +285,11 @@ def main() -> None:
     if use_amp:
         print("mixed precision enabled")
 
+    run_steps = 0
+    hit_cap = False
     for epoch in range(1, args.epochs + 1):
+        if hit_cap:
+            break
         model.train()
         started = time.time()
         totals = {"policy": 0.0, "value": 0.0, "n": 0}
@@ -290,11 +313,16 @@ def main() -> None:
             scaler.update()
             scheduler.step()
             steps += 1
+            run_steps += 1
 
             batch = planes.size(0)
             totals["policy"] += float(policy_loss.item()) * batch
             totals["value"] += float(value_loss.item()) * batch
             totals["n"] += batch
+
+            if args.max_steps > 0 and run_steps >= args.max_steps:
+                hit_cap = True
+                break
 
         seen = max(1, totals["n"])
         current_lr = scheduler.get_last_lr()[0]
@@ -321,7 +349,8 @@ def main() -> None:
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     save_checkpoint(args.out, model, steps=steps,
                     extra={"positions": len(dataset), "data": list(args.data)})
-    print(f"saved {args.out} ({describe(model)}, {steps} steps)")
+    print(f"saved {args.out} ({describe(model)}, {steps} steps; "
+          f"{run_steps} trained this run)")
 
 
 def _validate(model, loader, device: str, value_weight: float, use_amp: bool):

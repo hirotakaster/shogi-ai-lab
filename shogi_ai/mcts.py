@@ -94,15 +94,32 @@ class Node:
         self.expanded = True
         self.improved_policy = None
 
-    def select(self) -> int:
-        """Return the index of the edge with the highest PUCT score."""
+    def select(self, fpu_reduction: Optional[float] = None) -> int:
+        """Return the index of the edge with the highest PUCT score.
+
+        ``fpu_reduction`` (first-play urgency) changes what an *unvisited*
+        edge is worth: by default it scores as 0.0 -- a draw -- whatever
+        the position, so in a position worth -0.6 every untried move looks
+        better than the position deserves and in a position worth +0.6
+        every untried move looks worse.  With a reduction set, an
+        unvisited edge instead inherits the node's own mean value minus
+        the reduction, the estimate KataGo and Leela use.  Edges already
+        carrying a virtual loss are unaffected: they are being visited
+        right now, and must keep looking like the loss that steers the
+        rest of the batch away from them.
+        """
         visits = self.child_visits + self.child_virtual
         total = float(visits.sum())
         # The virtual loss is subtracted from the running total as well as
         # counted as a visit, so a pending sibling looks like a loss.  That is
         # what steers the paths within one batch apart.
         denom = np.maximum(visits, 1e-8)
-        q = np.where(visits > 0.0, (self.child_value - self.child_virtual) / denom, 0.0)
+        q = (self.child_value - self.child_virtual) / denom
+        if fpu_reduction is None:
+            q = np.where(visits > 0.0, q, 0.0)
+        else:
+            fpu = float(np.clip(self.mean_value() - fpu_reduction, -1.0, 1.0))
+            q = np.where(visits > 0.0, q, fpu)
         c = math.log((1.0 + total + C_PUCT_BASE) / C_PUCT_BASE) + C_PUCT_INIT
         u = c * self.priors * math.sqrt(max(total, 1e-8)) / (1.0 + visits)
         return int(np.argmax(q + u))
@@ -182,6 +199,7 @@ class MCTS:
         rng: Optional[np.random.Generator] = None,
         search_mode: str = "puct",
         gumbel_candidates: int = GUMBEL_CANDIDATES,
+        fpu_reduction: Optional[float] = None,
     ):
         if search_mode not in ("puct", "gumbel"):
             raise ValueError(f"unknown search_mode {search_mode!r}")
@@ -192,6 +210,11 @@ class MCTS:
         self.rng = rng or np.random.default_rng()
         self.search_mode = search_mode
         self.gumbel_candidates = max(1, gumbel_candidates)
+        #: First-play urgency for PUCT selection below the root; None
+        #: keeps the legacy behaviour (unvisited edges score 0.0).  The
+        #: Gumbel root is unaffected -- it completes unvisited actions
+        #: with the root value already.
+        self.fpu_reduction = fpu_reduction
         self.last_root: Optional[Node] = None
         #: Subtree retained by :meth:`advance`, consumed by the next run.
         self._pending_root: Optional[Node] = None
@@ -377,7 +400,7 @@ class MCTS:
                 if node is root and forced_root_action is not None:
                     action = forced_root_action
                 else:
-                    action = node.select()
+                    action = node.select(self.fpu_reduction)
                 path.append((node, action))
                 node.child_virtual[action] += VIRTUAL_LOSS
                 backend.push(node.moves[action])

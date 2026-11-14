@@ -27,7 +27,8 @@ class MctsPlayer:
 
     def __init__(self, evaluator, simulations: int = 200, batch_size: int = 16,
                  name: str = "mcts", search_mode: str = "puct",
-                 gumbel_candidates: int = 16, add_noise: bool = False):
+                 gumbel_candidates: int = 16, add_noise: bool = False,
+                 fpu_reduction: Optional[float] = None):
         self.evaluator = evaluator
         self.simulations = simulations
         self.batch_size = batch_size
@@ -35,12 +36,14 @@ class MctsPlayer:
         self.search_mode = search_mode
         self.gumbel_candidates = gumbel_candidates
         self.add_noise = add_noise
+        self.fpu_reduction = fpu_reduction
 
     def choose(self, backend, ply: int, temperature: float, rng):
         mcts = MCTS(self.evaluator, simulations=self.simulations,
                     batch_size=self.batch_size, add_noise=self.add_noise, rng=rng,
                     search_mode=self.search_mode,
-                    gumbel_candidates=self.gumbel_candidates)
+                    gumbel_candidates=self.gumbel_candidates,
+                    fpu_reduction=self.fpu_reduction)
         root = mcts.run(backend)
         if not root.moves:
             return None
@@ -179,7 +182,8 @@ def _build_player(spec: str, args, name: str):
                           batch_size=args.batch_size, name="random-net",
                           search_mode=args.search_mode,
                           gumbel_candidates=args.gumbel_candidates,
-                          add_noise=getattr(args, "add_noise", False))
+                          add_noise=getattr(args, "add_noise", False),
+                          fpu_reduction=getattr(args, "fpu_reduction", None))
     from .evaluator import load_evaluator
 
     evaluator = load_evaluator(spec, preset=args.preset, device=args.device)
@@ -187,7 +191,8 @@ def _build_player(spec: str, args, name: str):
                       batch_size=args.batch_size, name=name,
                       search_mode=args.search_mode,
                       gumbel_candidates=args.gumbel_candidates,
-                      add_noise=getattr(args, "add_noise", False))
+                      add_noise=getattr(args, "add_noise", False),
+                      fpu_reduction=getattr(args, "fpu_reduction", None))
 
 
 #: Per-process state for the parallel match, set by :func:`_init_match_worker`.
@@ -256,6 +261,9 @@ def main() -> None:
     parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
                         help="root search mode for both MCTS players")
     parser.add_argument("--gumbel-candidates", type=int, default=16)
+    parser.add_argument("--fpu-reduction", type=float, default=None,
+                        help="first-play urgency passed to both players; "
+                             "unset keeps the legacy unvisited value of 0.0")
     parser.add_argument("--max-moves", type=int, default=320)
     parser.add_argument("--opening-moves", type=int, default=8)
     parser.add_argument("--add-noise", action="store_true",

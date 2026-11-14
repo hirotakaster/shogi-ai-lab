@@ -63,6 +63,9 @@ class SelfPlayConfig:
     inference_batch_size: int = 256
     #: How long the coalescing evaluator waits for more planes (ms).
     inference_wait_ms: float = 5.0
+    #: First-play urgency reduction for PUCT selection below the root;
+    #: None keeps the legacy behaviour (unvisited edges score 0.0).
+    fpu_reduction: Optional[float] = None
 
     def capped_simulations(self) -> int:
         if self.playout_cap_simulations > 0:
@@ -92,7 +95,8 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
     mcts = MCTS(evaluator, simulations=config.simulations,
                 batch_size=config.batch_size, add_noise=True, rng=rng,
                 search_mode=config.search_mode,
-                gumbel_candidates=config.gumbel_candidates)
+                gumbel_candidates=config.gumbel_candidates,
+                fpu_reduction=config.fpu_reduction)
 
     pending: List[dict] = []
     outcome: Optional[int] = None
@@ -315,6 +319,9 @@ def main() -> None:
     parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
                         help="root search: PUCT, or Gumbel AlphaZero for low budgets")
     parser.add_argument("--gumbel-candidates", type=int, default=16)
+    parser.add_argument("--fpu-reduction", type=float, default=None,
+                        help="first-play urgency: unvisited edges inherit the "
+                             "node's mean value minus this; unset keeps 0.0")
     parser.add_argument("--playout-cap-fraction", type=float, default=0.0,
                         help="fraction of plies searched at full budget; "
                              "0 disables playout-cap randomisation")
@@ -347,6 +354,7 @@ def main() -> None:
         device=args.device,
         search_mode=args.search_mode,
         gumbel_candidates=args.gumbel_candidates,
+        fpu_reduction=args.fpu_reduction,
         playout_cap_fraction=args.playout_cap_fraction,
         playout_cap_simulations=args.playout_cap_simulations,
         parallel_games=args.parallel_games,

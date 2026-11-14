@@ -89,6 +89,25 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   still means the move-cap adjudication above, not a low-cap ply.
 - `MCTS.run(..., simulations=N)` overrides the budget for one call only;
   playout-cap randomisation is built on it.
+- PUCT selection supports first-play urgency (`--fpu-reduction` in
+  self-play, evaluate and learn_loop; unset is the legacy behaviour).
+  An unvisited edge otherwise scores q = 0.0 -- a draw -- whatever the
+  position is worth, so in a position worth -0.6 every untried move
+  looks better than the position deserves.  With a reduction set, an
+  unvisited edge instead inherits the node's own mean value minus the
+  reduction (the KataGo/Leela estimate).  It applies below the root in
+  both modes and at the root in `puct` mode; the Gumbel root already
+  completes unvisited actions with the root value.  Edges carrying a
+  virtual loss are exempt -- they are being visited right now and must
+  keep looking like losses.  Opt-in: A/B it at the gate before adopting.
+- `--round-max-steps N` in learn_loop caps the optimiser steps of a
+  round that trains from a champion (train_az `--max-steps`).  With
+  full epochs the step count grew with the replay buffer -- ~500 to
+  ~2,000 steps per round over the 2026-11-14 run -- and the gate
+  scores swung with it (0.350/0.412 rejections among steady
+  promotions).  A fixed budget keeps every round's update the same
+  size; train_az sizes the OneCycle schedule to the cap so the cycle
+  still completes inside the budget.
 - Self-play can run games concurrently in one process
   (`--parallel-games N`): each game owns its backend, search and RNG,
   and leaf evaluations are coalesced across games by
@@ -208,7 +227,7 @@ run's champion scored 0.200 there, which is the number to beat first.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 148 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 158 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

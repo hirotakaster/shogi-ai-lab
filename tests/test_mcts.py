@@ -336,5 +336,56 @@ class SimulationOverrideTests(unittest.TestCase):
         self.assertEqual(mcts.simulations, 200)
 
 
+def _node(priors, visits, values):
+    """An expanded node with hand-set edge statistics."""
+    node = Node()
+    node.expand(list(range(len(priors))), list(range(len(priors))),
+                np.asarray(priors, dtype=np.float32))
+    node.child_visits = np.asarray(visits, dtype=np.float32)
+    node.child_value = np.asarray(values, dtype=np.float32)
+    return node
+
+
+class FirstPlayUrgencyTests(unittest.TestCase):
+    """FPU: an unvisited edge inherits the node's mean value, reduced.
+
+    The legacy default scores every unvisited edge as 0.0 -- a draw --
+    so in a position worth -0.6 an untried low-prior move outranks the
+    moves the search has actually measured.  The numbers below are
+    worked out against the PUCT formula by hand; the margins are wide.
+    """
+
+    def test_losing_position_legacy_chases_the_untried_move(self):
+        # Edges A (q -0.5, 500 visits) and C (q -0.7, 500 visits) are
+        # measured; B (prior 0.001) is untried.  Node value is -0.6.
+        node = _node([0.4, 0.001, 0.599], [500, 0, 500], [-250.0, 0.0, -350.0])
+        self.assertEqual(node.select(), 1)  # B, scored as a draw
+        self.assertEqual(node.select(0.15), 0)  # A, the best measured move
+
+    def test_fpu_is_a_no_op_on_a_fresh_node(self):
+        # No visits anywhere: the mean is 0, so every edge takes the same
+        # offset and the priors decide, exactly as before.
+        node = _node([0.2, 0.5, 0.3], [0, 0, 0], [0.0, 0.0, 0.0])
+        self.assertEqual(node.select(), 1)
+        self.assertEqual(node.select(0.25), 1)
+
+    def test_virtual_loss_edge_keeps_looking_like_a_loss(self):
+        # Edge 1 is in flight (virtual loss, no real visit yet).  FPU
+        # must not revalue it to the node's mean, or the batch would
+        # pile onto the leaf already being evaluated.
+        node = _node([0.5, 0.5], [10, 0], [5.0, 0.0])
+        node.child_virtual = np.asarray([0.0, 1.0], dtype=np.float32)
+        self.assertEqual(node.select(), 0)
+        self.assertEqual(node.select(0.15), 0)
+
+    def test_search_with_fpu_spends_the_budget(self):
+        backend = PurePythonBackend()
+        mcts = MCTS(uniform_evaluator, simulations=32, batch_size=8,
+                    fpu_reduction=0.15)
+        root = mcts.run(backend)
+        self.assertEqual(int(root.visit_counts().sum()), 32)
+        self.assertEqual(float(np.abs(root.child_virtual).sum()), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

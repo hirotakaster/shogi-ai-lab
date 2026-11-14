@@ -51,7 +51,7 @@ def usable_data(path: Path) -> bool:
 
 
 def training_regime(args, has_champion: bool):
-    """Return ``(lr, epochs)`` for this round's training.
+    """Return ``(lr, epochs, max_steps)`` for this round's training.
 
     Training *from* an existing champion is a different job from training
     from scratch: the from-scratch rate (2e-3) applied to a trained
@@ -59,12 +59,21 @@ def training_regime(args, has_champion: bool):
     the first Colab run's validation loss spiked past 40 mid-round for
     exactly this reason.  ``--round-lr`` / ``--round-epochs`` set the
     finetuning regime; 0 keeps the from-scratch values.
+
+    ``--round-max-steps`` caps the optimiser steps per round the same
+    way: with full epochs over the whole replay buffer, a round's step
+    count grows with the buffer (the 2026-11-14 run drifted from ~500
+    to ~2,000 steps per round), so later candidates moved much further
+    from the champion than early ones and the gate scores swung
+    (0.350/0.412 rejections among steady promotions).  A fixed budget
+    keeps every round's update the same size; 0 keeps full epochs.
     """
     if has_champion:
         lr = args.round_lr if args.round_lr > 0 else args.lr
         epochs = args.round_epochs if args.round_epochs > 0 else args.epochs
-        return lr, epochs
-    return args.lr, args.epochs
+        max_steps = getattr(args, "round_max_steps", 0)
+        return lr, epochs, max_steps
+    return args.lr, args.epochs, 0
 
 
 def evaluation_processes(args) -> int:
@@ -214,6 +223,9 @@ def main() -> None:
     parser.add_argument("--search-mode", choices=("puct", "gumbel"), default="puct",
                         help="self-play root search mode")
     parser.add_argument("--gumbel-candidates", type=int, default=16)
+    parser.add_argument("--fpu-reduction", type=float, default=None,
+                        help="first-play urgency for self-play and gating; "
+                             "unset keeps the legacy unvisited value of 0.0")
     parser.add_argument("--playout-cap-fraction", type=float, default=0.0,
                         help="fraction of self-play plies at full budget; 0 disables")
     parser.add_argument("--playout-cap-simulations", type=int, default=0)
@@ -230,6 +242,11 @@ def main() -> None:
     parser.add_argument("--round-epochs", type=int, default=0,
                         help="epochs when training from an existing champion; "
                              "0 means use --epochs")
+    parser.add_argument("--round-max-steps", type=int, default=0,
+                        help="cap optimiser steps per round when training "
+                             "from an existing champion, so the update size "
+                             "stays fixed as the replay buffer grows; "
+                             "0 means full epochs")
     parser.add_argument("--latest-repeat", type=int, default=1,
                         help="repeat the newest round's data file this many "
                              "times in the training buffer")
@@ -346,6 +363,8 @@ def main() -> None:
                     "--seed", str(args.seed + round_number * 104729),
                     "--out", str(data_path),
                 ]
+                if args.fpu_reduction is not None:
+                    cmd += ["--fpu-reduction", str(args.fpu_reduction)]
                 if current is not None:
                     cmd += ["--model", str(current)]
                 run(cmd, root)
@@ -361,10 +380,11 @@ def main() -> None:
                                   args.latest_repeat)
             if not buffer:
                 raise SystemExit("no training data available for this round")
-            lr, epochs = training_regime(args, current is not None)
+            lr, epochs, max_steps = training_regime(args, current is not None)
             regime = "finetune" if current is not None else "from scratch"
-            print(f"training regime: {regime} (lr {lr:g}, {epochs} epochs, "
-                  f"{len(buffer)} data files)")
+            cap_note = f", max {max_steps} steps" if max_steps > 0 else ""
+            print(f"training regime: {regime} (lr {lr:g}, {epochs} epochs"
+                  f"{cap_note}, {len(buffer)} data files)")
             cmd = [
                 sys.executable, "-m", "shogi_ai.train_az",
                 "--data", *buffer,
@@ -381,6 +401,8 @@ def main() -> None:
                 "--metrics-out", str(data_dir / "train_metrics.jsonl"),
                 "--round", str(round_number),
             ]
+            if max_steps > 0:
+                cmd += ["--max-steps", str(max_steps)]
             if current is not None:
                 cmd += ["--init", str(current)]
             run(cmd, root)
@@ -411,6 +433,8 @@ def main() -> None:
             ]
             if args.eval_add_noise:
                 cmd.append("--add-noise")
+            if args.fpu_reduction is not None:
+                cmd += ["--fpu-reduction", str(args.fpu_reduction)]
             match = subprocess.run(cmd, cwd=root, check=True,
                                    capture_output=True, text=True)
             print(match.stdout.strip())

@@ -4,7 +4,7 @@ from unittest.mock import patch
 import numpy as np
 
 from shogi_ai.encoding import POLICY_SIZE, mirror_policy_index
-from shogi_ai.train_az import RandomMirrorDataset, _prepare
+from shogi_ai.train_az import RandomMirrorDataset, _prepare, planned_steps
 
 
 INITIAL_SFEN = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
@@ -100,6 +100,26 @@ class RandomMirrorDatasetTests(unittest.TestCase):
         self.assertEqual(mirrored_planes[0, 1, 6], 1.0)
         self.assertEqual(int(np.argmax(mirrored_target)), mirror_policy_index(policy_index))
         self.assertEqual(float(mirrored_target.sum()), 1.0)
+
+
+class PlannedStepsTests(unittest.TestCase):
+    """The step cap sizes the LR schedule as well as stopping the run."""
+
+    def test_no_cap_is_epochs_times_batches(self):
+        self.assertEqual(planned_steps(epochs=4, batches_per_epoch=100,
+                                       max_steps=0), 400)
+
+    def test_cap_below_the_total_wins(self):
+        self.assertEqual(planned_steps(epochs=4, batches_per_epoch=100,
+                                       max_steps=250), 250)
+
+    def test_cap_above_the_total_changes_nothing(self):
+        self.assertEqual(planned_steps(epochs=4, batches_per_epoch=100,
+                                       max_steps=1000), 400)
+
+    def test_empty_loader_still_plans_one_step_per_epoch(self):
+        self.assertEqual(planned_steps(epochs=2, batches_per_epoch=0,
+                                       max_steps=0), 2)
 
 
 if __name__ == "__main__":
