@@ -162,5 +162,65 @@ class BuildBufferTests(unittest.TestCase):
             self.assertEqual([Path(p).name for p in buffer], ["selfplay_001.jsonl"])
 
 
+class BackupStateTests(unittest.TestCase):
+    """The Drive backup exists because a Colab runtime's disk is
+    ephemeral: the layout must match the notebook's manual save cell so
+    the same restore procedure works, and history (the commit marker)
+    must land last."""
+
+    def _seed(self, tmp):
+        root = Path(tmp)
+        data_dir = root / "data" / "learn"
+        data_dir.mkdir(parents=True)
+        best = root / "data" / "policy_value.pt"
+        best.write_bytes(b"champion")
+        history = data_dir / "history.json"
+        history.write_text(json.dumps([{"round": 1}]), encoding="utf-8")
+        data = data_dir / "selfplay_001.jsonl"
+        data.write_text(json.dumps({"sfen": "x"}) + "\n", encoding="utf-8")
+        candidate = data_dir / "policy_value_001.pt"
+        candidate.write_bytes(b"candidate")
+        return data_dir, best, history, data, candidate
+
+    def test_mirrors_champion_and_round_files(self):
+        from shogi_ai.learn_loop import backup_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir, best, history, data, candidate = self._seed(tmp)
+            backup = Path(tmp) / "backup"
+            copied = backup_state(backup, data_dir, best, history,
+                                  [data, candidate])
+            self.assertEqual((backup / "policy_value.pt").read_bytes(),
+                             b"champion")
+            self.assertEqual(
+                (backup / "learn" / "selfplay_001.jsonl").read_text(
+                    encoding="utf-8"),
+                data.read_text(encoding="utf-8"))
+            self.assertEqual(
+                (backup / "learn" / "policy_value_001.pt").read_bytes(),
+                b"candidate")
+            self.assertEqual(
+                json.loads((backup / "learn" / "history.json").read_text(
+                    encoding="utf-8")),
+                [{"round": 1}])
+            self.assertEqual(copied[-1], backup / "learn" / "history.json")
+            self.assertFalse(list(backup.rglob("*.tmp")),
+                             "no temp files may be left behind")
+
+    def test_missing_champion_and_files_are_skipped(self):
+        from shogi_ai.learn_loop import backup_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir, best, history, data, candidate = self._seed(tmp)
+            best.unlink()
+            backup = Path(tmp) / "backup"
+            copied = backup_state(backup, data_dir, best, history,
+                                  [data, Path(tmp) / "nope.jsonl"])
+            self.assertFalse((backup / "policy_value.pt").exists())
+            self.assertTrue((backup / "learn" / "selfplay_001.jsonl").exists())
+            self.assertTrue((backup / "learn" / "history.json").exists())
+            self.assertEqual(len(copied), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

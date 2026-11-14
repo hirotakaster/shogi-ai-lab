@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,61 @@ def _load_history(path: Path) -> List[dict]:
     return loaded if isinstance(loaded, list) else []
 
 
+def _copy_atomic(src: Path, dst: Path) -> Path:
+    """Copy via a temp sibling + rename, so a restore never reads a
+    half-written backup file after a crash mid-copy."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".tmp")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+    return dst
+
+
+def backup_state(backup_dir: Path, data_dir: Path, best_model: Path,
+                 history_path: Path, files) -> List[Path]:
+    """Mirror committed run state into ``backup_dir``; return what was copied.
+
+    A Colab runtime's disk is ephemeral: when the session dies, everything
+    not copied off it is gone, and until this existed the only copy was the
+    notebook's manual save cell.  The layout mirrors that cell (and so the
+    restore procedure): the champion at ``backup_dir/<model name>`` and the
+    round artefacts under ``backup_dir/<data dir name>/``.  ``files`` are
+    the data-dir artefacts to mirror (all of them at startup, just the
+    round's own after a round).  History is copied last because it is the
+    commit marker: a backup whose history lists a round always holds that
+    round's files complete.
+    """
+    copied: List[Path] = []
+    if best_model.exists():
+        copied.append(_copy_atomic(best_model, backup_dir / best_model.name))
+    learn_backup = backup_dir / data_dir.name
+    seen = set()
+    for path in files:
+        path = Path(path)
+        if path == history_path or path.name in seen or not path.exists():
+            continue
+        seen.add(path.name)
+        copied.append(_copy_atomic(path, learn_backup / path.name))
+    if history_path.exists():
+        copied.append(_copy_atomic(history_path,
+                                   learn_backup / history_path.name))
+    return copied
+
+
+def _backup_safely(backup_dir: Path, data_dir: Path, best_model: Path,
+                   history_path: Path, files) -> None:
+    """Back up, but never let a backup failure kill a long training run."""
+    try:
+        copied = backup_state(backup_dir, data_dir, best_model,
+                              history_path, files)
+    except OSError as exc:
+        print(f"WARNING: backup to {backup_dir} failed ({exc}); "
+              f"continuing without it", flush=True)
+        return
+    print(f"backup: {len(copied)} file(s) mirrored to {backup_dir}",
+          flush=True)
+
+
 def _print_plan(args, data_dir: Path, best_model: Path, initial_data,
                 finished_rounds, current) -> None:
     """Say what will be reused before doing any work.
@@ -202,6 +258,11 @@ def main() -> None:
     parser.add_argument("--initial-data", default="",
                         help="existing JSONL used for round 1 instead of self-play")
     parser.add_argument("--data-dir", default="data/learn")
+    parser.add_argument("--backup-dir", default="",
+                        help="mirror the champion and each round's artefacts "
+                             "here as rounds commit (e.g. a Google Drive folder "
+                             "on Colab), so a dead session loses at most the "
+                             "round in progress; empty disables")
     parser.add_argument("--out-model", default="data/policy_value.pt")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--seed", type=int, default=20260926)
@@ -236,6 +297,14 @@ def main() -> None:
     eval_simulations = args.eval_simulations or args.simulations
 
     _print_plan(args, data_dir, best_model, initial_data, finished_rounds, current)
+
+    backup_dir = Path(args.backup_dir) if args.backup_dir else None
+    if backup_dir is not None:
+        # Re-assert the backup of everything committed so far: cheap, and
+        # it proves the destination (a mounted Drive) actually works
+        # before hours of training depend on it.
+        existing = sorted(p for p in data_dir.iterdir() if p.is_file())
+        _backup_safely(backup_dir, data_dir, best_model, log_path, existing)
 
     for round_number in range(1, args.rounds + 1):
         if round_number in finished_rounds:
@@ -370,6 +439,13 @@ def main() -> None:
             "seconds": round(time.time() - started, 1),
         })
         log_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+        if backup_dir is not None:
+            round_files = [candidate, data_dir / "train_metrics.jsonl"]
+            if data_path.parent == data_dir:
+                round_files.append(data_path)
+            _backup_safely(backup_dir, data_dir, best_model, log_path,
+                           round_files)
 
     print(f"\ndone. {sum(1 for h in history if h['promoted'])}/{len(history)} "
           f"rounds promoted. history: {log_path}")

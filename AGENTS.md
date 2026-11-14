@@ -122,6 +122,16 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   from-scratch rate of 2e-3 spiked the validation policy loss past 40
   mid-round -- the candidates came out as champion-plus-noise and
   both rounds were rejected at the gate (0.400, 0.250).
+- The loop can mirror its committed state off the runtime
+  (`learn_loop --backup-dir DIR`): at startup and after every round it
+  copies the champion and the round's artefacts into DIR (atomically,
+  history last -- it is the commit marker), in the same layout as the
+  notebook's manual save cell, so the same restore procedure applies.
+  This exists because a Colab runtime's disk is ephemeral: without it
+  the manual save cell was the only copy, and a dead session lost every
+  round since it last ran.  The notebook passes the Drive artefacts
+  folder.  Backup failures warn and continue -- a flaky Drive mount
+  must not kill a long run.
 - Shogi has no stalemate draw: a side with no legal move loses. `terminal_value()`
   returns `-1.0` for that, which is correct and is why a rook move that merely
   removes every legal reply is a winning move.
@@ -198,7 +208,7 @@ run's champion scored 0.200 there, which is the number to beat first.
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 143 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 148 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```
