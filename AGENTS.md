@@ -224,6 +224,36 @@ session budget is tight.  Judge progress by the gate scores and by a
 fixed side match against the depth-3 heuristic engine -- the first
 run's champion scored 0.200 there, which is the number to beat first.
 
+## Campaign 2 (settings validated 2026-11-15)
+
+Campaign 1 (2026-11-14/15, L4, Batch 8 code) completed all 40 rounds:
+22 promotions, final champion 41,892 steps.  The yardstick match
+against the depth-3 heuristic improved to **0.338** (13W-26L-1D,
+-117 Elo) from the first champion's 0.200, and the final champion
+beat campaign 1's round-1 candidate 0.850 (+301 Elo) -- real progress,
+still below the toy heuristic engine.  The next yardstick target is
+0.500: actually beating the heuristic.
+
+Before campaign 2, the open search settings were A/B-tested on a T4
+(100 games per arm, final champion vs the round-1 candidate, one
+seed): baseline (200 simulations, `--gumbel-candidates 16`) 0.850;
+`--fpu-reduction 0.2` scored 0.750 -- harmful, do not use;
+**`--gumbel-candidates 8` scored 0.895 and was the fastest arm**;
+400 simulations scored 0.765 at 16 candidates and 0.845 at 8 --
+extra simulations bought nothing at either candidate count, so
+simulations stay at 200.  The bottleneck is the network's evaluation
+quality and the volume/freshness of self-play data, not search depth.
+
+Campaign 2 therefore continues from the campaign-1 champion on the
+base network with a fresh replay buffer (restore only
+`policy_value.pt` from the Drive backup; the notebook has a restore
+cell for this and cells 19/20 are skipped), with these changes from
+campaign 1: `--gumbel-candidates 8`, `--eval-games 80` (halve the
+gate's sampling noise), and `--round-max-steps 1200` (campaign 1's
+training steps per round drifted ~500 -> ~3,000 as the buffer grew;
+the cap keeps every round's training uniform).  The notebook's learn
+cell already carries exactly this configuration.
+
 ## Verification Commands
 
 ```bash
