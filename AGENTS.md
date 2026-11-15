@@ -293,9 +293,47 @@ It is opt-in only -- the notebook and the running campaign stay on
 loading an `attn` checkpoint (checkpoints are self-describing).
 Switching a campaign to it forks the lineage like the large switch
 would: no weight transfer, the bridge is distillation pretraining
-from self-play records, which are architecture-independent.  Whether
-it actually helps at this data scale is unmeasured; that experiment
-belongs to phase 2, next to or instead of the large switch.
+from self-play records, which are architecture-independent.  That
+distillation experiment ran on 2026-11-15; see Campaign 3 below.
+
+Campaign 2's extension (rounds 11-20, 2026-11-15, L4, Batch 11
+settings, 3 h 31 min) promoted only round 18 (0.575), ending at a
+46,652-step champion with a 279,762-position buffer; the Batch 11
+training increase did not raise the promotion pace (1/10 in the
+extension vs 2/10 in rounds 1-10).  The yardstick then delivered the
+campaign's most important lesson: the 46,652-step champion scored
+**0.425** (17W-23L-0D, -53 Elo) against the depth-3 heuristic, DOWN
+from the 43,052-step champion's 0.700, even though it had beaten
+that same predecessor head-to-head at the round-18 gate.  Internal
+gating alone can therefore drift away from external strength -- the
+candidates increasingly adapt to the incumbent's style (a
+"champion-copy" loop).  From campaign 3 on, measure the yardstick
+every ~10 rounds, not only at the end.
+
+## Campaign 3 (attn, decided 2026-11-16)
+
+The phase-2 architecture experiment ran on 2026-11-15 instead of
+waiting: a fresh `attn` network was distilled from campaign 2's
+self-play records (243,264 loadable positions of 279,762 recorded;
+20 epochs, 18,060 steps, ~16 min on L4; final val policy 2.0607 /
+value 0.5824 / top1 0.488), archived at
+`ARTIFACTS/attn/policy_value_attn_distilled.pt`.  Measured the same
+night: yardstick **0.450** (18W-22L-0D, -35 Elo) and head-to-head vs
+the base champion **0.494** (37W-38L-5D, -4 Elo, 80 games at gate
+settings) -- statistical parity.  The architecture fork is therefore
+free: full strength was recovered from data alone, with no weight
+transfer.  No strength gain yet either; attn's ceiling is testable
+only by its own self-play.
+
+Decision (2026-11-16): campaign 3 runs on attn.  It starts from the
+distilled model as its initial champion with a fresh buffer, backs
+up to its own subfolder `ARTIFACTS/campaign3/`, and keeps campaign
+2's training settings (Batch 11 amounts, Gumbel candidates 8, gate
+80 games); the first block is 10 rounds, with a yardstick
+measurement every 10 rounds.  The notebook carries campaign-3
+restore/learn/check cells (Batch 14); do not use the campaign-2
+restore or save cells for it.  The base champion and the
+`campaign2_r10_43052` milestone stay archived as the fallback.
 
 ## Verification Commands
 
