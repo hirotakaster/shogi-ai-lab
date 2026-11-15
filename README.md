@@ -69,8 +69,8 @@ python -m shogi_ai.train_az --data data/initial_selfplay.jsonl \
 python -m shogi_ai.learn_loop --rounds 10 --games 400 --simulations 200 \
     --batch-size 32 --processes 10 --backend cshogi --preset base \
     --search-mode gumbel --gumbel-candidates 8 --playout-cap-fraction 0.25 \
-    --round-lr 5e-4 --round-epochs 2 --latest-repeat 2 --grad-clip 1.0 \
-    --round-max-steps 1200 \
+    --round-lr 5e-4 --round-epochs 5 --latest-repeat 4 --grad-clip 1.0 \
+    --round-max-steps 3600 \
     --eval-games 80 --eval-simulations 128 --gate 0.55 --eval-add-noise \
     --max-positions 400000 --out-model data/policy_value.pt
 ```
@@ -133,10 +133,14 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 - **第1期（2026-11-14〜15、L4、40ラウンド）**: 22ラウンドで昇格し、最終
   チャンピオンは 41,892 steps。従来型エンジン（深さ3）との物差し対戦は
   0.200 → **0.338** に改善したが、まだ格下。次の目標は 0.500（物差しに勝つ）。
-- **第2期（継続中）**: 第1期の最終チャンピオンから base のまま継続。T4 での
-  A/B 検証で決めた設定（Gumbel 候補 8、ゲート 80 局、学習ステップ固定 1200）で
-  回している。FPU は A/B で悪化したため不採用、シミュレーションは 200 のまま
-  （400 に増やしても伸びなかった）。
+- **第2期（最初の10ラウンド完了）**: 第1期の最終チャンピオンから base のまま
+  継続。T4 での A/B 検証で決めた設定（Gumbel 候補 8、ゲート 80 局）で最初の
+  10ラウンドを回し、2ラウンド昇格してチャンピオンは 43,052 steps に
+  （ラウンド8が 0.575 で昇格、9は 0.400、10は 0.494 で却下）。候補が王者と
+  ほぼ互角止まりだったため、続くラウンドでは学習量を増やした
+  （エポック 5、最新データの重み 4倍、ステップ上限 3600）。FPU は A/B で
+  悪化したため不採用、シミュレーションは 200 のまま（400 に増やしても
+  伸びなかった）。43,052 steps 時点の物差し対戦は未測定。
 
 ## 実装済み
 

@@ -23,7 +23,8 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 - `shogi_ai/engine.py`: the heuristic alpha-beta engine, kept as a baseline.
 - `shogi_ai/self_play.py`: heuristic game generation for bootstrap data.
 - `web/`: browser UI in plain HTML, CSS and JS.
-- `colab/train_shogi_ai.ipynb`: the training notebook.
+- `colab/train_github.ipynb`: the training notebook (clones the newest
+  `mochi/batch-*` branch from GitHub; Drive holds artefacts only).
 
 ## Development Notes
 
@@ -253,6 +254,30 @@ gate's sampling noise), and `--round-max-steps 1200` (campaign 1's
 training steps per round drifted ~500 -> ~3,000 as the buffer grew;
 the cap keeps every round's training uniform).  The notebook's learn
 cell already carries exactly this configuration.
+
+Campaign 2's first 10 rounds ran on 2026-11-15 (L4, 3 h 7 min):
+2 promotions, champion 41,892 -> 43,052 steps (one promotion in
+rounds 1-7 -> 42,242; round 8 promoted at 0.575, +53 Elo).  Round 9
+was rejected at 0.400 and round 10 at 0.494 (-4 Elo) -- the
+candidates had become champion-level but not clearly better.
+Per-round detail for rounds 1-7 scrolled off the Colab output; the
+full record is in the Drive backup's history.json.  Two process
+lessons: the loop's backup overwrote campaign 1's artefacts in
+place (the campaign-1 final champion was never archived under a
+milestone name, so it can no longer be matched head-to-head), and
+the restore path silently depended on `PRESET` being defined by the
+speed or pretrain cell.  Batch 11 fixes both: the notebook archives
+the Drive champion to `ARTIFACTS/champions/<name>.pt` at campaign
+milestones, the restore cell defines `PRESET` itself, and a
+yardstick cell measures the restored champion against the depth-3
+heuristic BEFORE any further training.  New campaigns should also
+get their own backup subfolder instead of sharing
+`shogi-ai-lab-artifacts`.  Batch 11 also raises the per-round
+training amount, which the round timing showed was nearly free
+(self-play ~900 s and gating ~180 s per round vs ~35 s of
+training): `--round-epochs 5`, `--latest-repeat 4` (the newest
+round is only ~12k of a ~132k-position buffer), and
+`--round-max-steps 3600`.
 
 ## Verification Commands
 
