@@ -37,8 +37,10 @@ uv run python server.py
 
 ## 学習（Google Colab）
 
-`colab/train_shogi_ai.ipynb` を Colab で開きます。リポジトリを Google Drive に置いて、
-ノートブックの `REPO` をそのパスに書き換えてから上から順に実行します。
+`colab/train_github.ipynb` を Colab で開きます。ノートブックは GitHub の最新の
+`mochi/batch-*` ブランチを clone して使うので、リポジトリを Drive に置く必要は
+ありません。Google Drive は成果物（チェックポイントと `data/learn/`）の保存先として
+だけマウントします（`shogi-ai-lab-artifacts/`）。
 
 ノートブックは次を行います。
 
@@ -50,6 +52,12 @@ uv run python server.py
 6. 自己対局 → 学習 → ゲーティング対戦のループ
 7. 従来型エンジンとの対戦で強さを確認
 
+継続学習（第2期以降）は、Drive のバックアップからチャンピオン
+（`policy_value.pt`）だけを復元してリプレイバッファを新規に始めます。
+ノートブックに復元専用セルがあり、事前学習のセルは飛ばします。学習ループは
+ラウンドごとに成果物を Drive へ自動バックアップするので、ランタイムが
+落ちても直近のラウンドから再開できます。
+
 ### コマンドで直接回す場合
 
 ```bash
@@ -57,10 +65,14 @@ uv run python server.py
 python -m shogi_ai.train_az --data data/initial_selfplay.jsonl \
     --epochs 20 --batch-size 256 --preset base --out data/policy_value.pt
 
-# 自己対局 → 学習 → ゲーティングを10ラウンド
-python -m shogi_ai.learn_loop --rounds 10 --games 60 --simulations 200 \
-    --batch-size 32 --processes 8 --backend cshogi --preset base \
-    --eval-games 20 --gate 0.55 --out-model data/policy_value.pt
+# 自己対局 → 学習 → ゲーティング（本番相当の設定。第2期の検証済み構成）
+python -m shogi_ai.learn_loop --rounds 10 --games 400 --simulations 200 \
+    --batch-size 32 --processes 10 --backend cshogi --preset base \
+    --search-mode gumbel --gumbel-candidates 8 --playout-cap-fraction 0.25 \
+    --round-lr 5e-4 --round-epochs 2 --latest-repeat 2 --grad-clip 1.0 \
+    --round-max-steps 1200 \
+    --eval-games 80 --eval-simulations 128 --gate 0.55 --eval-add-noise \
+    --max-positions 400000 --out-model data/policy_value.pt
 ```
 
 新しいモデルは、現行モデルに対して `--gate` 以上のスコアを取ったときだけ昇格します。
@@ -97,10 +109,10 @@ MCTS の実効速度（`base`、CUDA、1プロセス）:
 | 32 | 2,314 |
 | 64 | 3,140 |
 
-`legal_moves()` の27,699回/秒には **SFEN/USI 橋渡しのコストが含まれます**。
-cshogi 本体の合法手生成はこれより桁違いに速く、現在はアダプタ側が律速です。
-ネイティブのマス番号を直接使えばさらに改善しますが、Mac で検証できないため
-安全側に倒しています。
+上の `legal_moves()` の実測は SFEN/USI 文字列を経由していた頃の値です。
+現在のアダプタは cshogi のネイティブなマス番号・指し手を直接読み書きし、
+文字列の橋渡しはホットパスから外れています。プロファイルでは単一の
+ホットスポットは残っておらず、コストは合法手生成とツリー操作に分散しています。
 
 ## 強さの測り方
 
@@ -116,6 +128,16 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
     --games 10 --simulations 200 --heuristic-depth 3 --backend python
 ```
 
+## 学習の記録
+
+- **第1期（2026-11-14〜15、L4、40ラウンド）**: 22ラウンドで昇格し、最終
+  チャンピオンは 41,892 steps。従来型エンジン（深さ3）との物差し対戦は
+  0.200 → **0.338** に改善したが、まだ格下。次の目標は 0.500（物差しに勝つ）。
+- **第2期（継続中）**: 第1期の最終チャンピオンから base のまま継続。T4 での
+  A/B 検証で決めた設定（Gumbel 候補 8、ゲート 80 局、学習ステップ固定 1200）で
+  回している。FPU は A/B で悪化したため不採用、シミュレーションは 200 のまま
+  （400 に増やしても伸びなかった）。
+
 ## 実装済み
 
 - 合法手生成、成り、持ち駒打ち、王手回避、二歩、行き所のない駒
@@ -127,6 +149,13 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 - リプレイバッファと混合精度学習
 - 学習時の左右反転データ拡張（方策インデックスも対称変換）
 - 世代間ゲーティング対戦と Elo 換算表示
+- Gumbel AlphaZero 探索（Sequential Halving による低シミュレーション向けのルート選択）
+- playout cap randomisation（一部の手をフル探索、それ以外を低コストで指す）
+- 探索木の再利用（指した手の部分木を次の手のルートに引き継ぐ）
+- ゲーム横断のバッチ推論と、自己対局・ゲーティングの並列実行
+- ゲーティングへの対局ごとのノイズ追加（先後だけで結果が決まる鏡像対戦の回避）
+- ファインチューニング学習（低学習率・最新ラウンドの重み付け・固定ステップ数）
+- ラウンドごとの Google Drive への自動バックアップ
 - 自己記述型チェックポイント（非互換な旧形式は明確に拒否）
 - 従来型αβエンジン（ベースライン）
 - 依存ゼロのWebサーバと将棋盤UI
@@ -143,7 +172,7 @@ python -m shogi_ai.evaluate --challenger data/policy_value.pt --champion heurist
 python3 -m unittest discover -s tests
 ```
 
-99テスト。cshogi 関連と PyTorch 必須のテストは、未導入環境（Apple Silicon など）ではスキップされます。
+158テスト。cshogi 関連と PyTorch 必須のテストは、未導入環境（Apple Silicon など）ではスキップされます。
 
 ## 開発環境
 
