@@ -12,7 +12,7 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
 - `shogi_ai/core.py`: rules, board representation, SFEN in and out, legal move generation, make-by-cloning.
 - `shogi_ai/encoding.py`: the 85 feature planes and the 2187 policy indices. Shared by every backend.
 - `shogi_ai/backends.py`: `PurePythonBackend` (no dependency) and `CshogiBackend` (fast).
-- `shogi_ai/network.py`: the single definition of the ResNet policy/value net, plus self-describing checkpoints.
+- `shogi_ai/network.py`: the single definition of the policy/value net (ResNet presets small/base/large, plus the experimental `attn` hybrid that interleaves self-attention blocks into the base trunk), plus self-describing checkpoints. Checkpoint configs carry `attn_every`/`attn_heads` with defaults of 0/8, so pre-hybrid checkpoints keep loading as pure ResNets and `CHECKPOINT_VERSION` did not need a bump (the encoding contract is unchanged).
 - `shogi_ai/evaluator.py`: batched inference on CUDA, MPS or CPU.
 - `shogi_ai/mcts.py`: PUCT search with virtual-loss leaf batching.
 - `shogi_ai/selfplay_az.py`: MCTS self-play producing training records.
@@ -284,11 +284,23 @@ progress; the cell now runs `--processes 10` and streams per-game
 progress.  Match conditions are unchanged (same games, seeds and
 tally -- `evaluate --processes` is parallel-invariant by the seeding
 rule above), so the result stays comparable with the 0.338 baseline.
+Batch 13 adds the experimental `attn` preset (the user asked for a
+Transformer direction on 2026-11-15): the base trunk with a pre-norm
+self-attention block (8 heads, learned positional embeddings over the
+81 squares) after blocks 5 and 10, ~8.09M params vs base's 7.47M.
+It is opt-in only -- the notebook and the running campaign stay on
+`base` -- and every CLI accepts it through `--preset attn` or by
+loading an `attn` checkpoint (checkpoints are self-describing).
+Switching a campaign to it forks the lineage like the large switch
+would: no weight transfer, the bridge is distillation pretraining
+from self-play records, which are architecture-independent.  Whether
+it actually helps at this data scale is unmeasured; that experiment
+belongs to phase 2, next to or instead of the large switch.
 
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 158 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 165 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

@@ -14,10 +14,17 @@ from .encoding import NUM_FEATURE_PLANES, POLICY_SIZE
 
 #: Named architectures.  ``base`` is the default: it fits comfortably on a
 #: 24 GB card and is the sweet spot for a few hours of self-play.
+#: ``attn`` is the experimental hybrid: the base trunk with a self-attention
+#: block after every ``attn_every`` residual blocks (and after the last
+#: one), so long-range relations (sliding pieces, king and castle) can be
+#: wired directly instead of through many convolutions.  Attention keys
+#: default to 0 (absent) in the plain presets, and old checkpoints whose
+#: config lacks them still load as pure ResNets.
 PRESETS: Dict[str, Dict[str, int]] = {
     "small": {"blocks": 6, "channels": 96},
     "base": {"blocks": 10, "channels": 192},
     "large": {"blocks": 15, "channels": 256},
+    "attn": {"blocks": 10, "channels": 192, "attn_every": 5, "attn_heads": 8},
 }
 DEFAULT_PRESET = "base"
 
@@ -45,6 +52,8 @@ def build_network(preset: str = DEFAULT_PRESET, blocks: Optional[int] = None,
     return PolicyValueNet(
         blocks=blocks if blocks is not None else shape["blocks"],
         channels=channels if channels is not None else shape["channels"],
+        attn_every=shape.get("attn_every", 0),
+        attn_heads=shape.get("attn_heads", 8),
     )
 
 
@@ -66,19 +75,64 @@ def _define():
             h = self.bn2(self.conv2(h))
             return F.relu(x + h)
 
-    class PolicyValueNet(nn.Module):
-        """ResNet trunk with a 2187-wide policy head and a scalar value head."""
+    class AttentionBlock(nn.Module):
+        """One pre-norm transformer layer over the 81 squares.
 
-        def __init__(self, blocks: int = 10, channels: int = 192):
+        The feature map is read as 81 tokens (one per square) with a
+        learned positional embedding, so a piece can attend to any other
+        square in one step; the result is folded back into a feature map
+        of the same shape, which keeps the trunk interface unchanged.
+        """
+
+        def __init__(self, channels: int, heads: int):
+            super().__init__()
+            self.pos = nn.Parameter(torch.zeros(1, 81, channels))
+            nn.init.normal_(self.pos, std=0.02)
+            self.norm1 = nn.LayerNorm(channels)
+            self.attn = nn.MultiheadAttention(
+                channels, heads, dropout=0.0, batch_first=True
+            )
+            self.norm2 = nn.LayerNorm(channels)
+            self.mlp = nn.Sequential(
+                nn.Linear(channels, 2 * channels),
+                nn.GELU(),
+                nn.Linear(2 * channels, channels),
+            )
+
+        def forward(self, x):
+            n, c, h, w = x.shape
+            t = x.flatten(2).transpose(1, 2) + self.pos
+            a = self.norm1(t)
+            t = t + self.attn(a, a, a, need_weights=False)[0]
+            t = t + self.mlp(self.norm2(t))
+            return t.transpose(1, 2).reshape(n, c, h, w)
+
+    class PolicyValueNet(nn.Module):
+        """ResNet trunk with a 2187-wide policy head and a scalar value head.
+
+        With ``attn_every`` > 0 the trunk interleaves an
+        :class:`AttentionBlock` after every ``attn_every`` residual
+        blocks and after the final block.
+        """
+
+        def __init__(self, blocks: int = 10, channels: int = 192,
+                     attn_every: int = 0, attn_heads: int = 8):
             super().__init__()
             self.blocks = blocks
             self.channels = channels
+            self.attn_every = attn_every
+            self.attn_heads = attn_heads
             self.stem = nn.Sequential(
                 nn.Conv2d(NUM_FEATURE_PLANES, channels, 3, padding=1, bias=False),
                 nn.BatchNorm2d(channels),
                 nn.ReLU(inplace=True),
             )
-            self.trunk = nn.Sequential(*(ResidualBlock(channels) for _ in range(blocks)))
+            layers = []
+            for i in range(1, blocks + 1):
+                layers.append(ResidualBlock(channels))
+                if attn_every > 0 and (i % attn_every == 0 or i == blocks):
+                    layers.append(AttentionBlock(channels, attn_heads))
+            self.trunk = nn.Sequential(*layers)
             # 27 move planes x 81 squares, produced directly by a 1x1 conv.
             self.policy_head = nn.Conv2d(channels, POLICY_SIZE // 81, 1)
             self.value_head = nn.Sequential(
@@ -99,7 +153,12 @@ def _define():
             return policy, self.value_head(h)
 
         def config(self) -> Dict[str, int]:
-            return {"blocks": self.blocks, "channels": self.channels}
+            return {
+                "blocks": self.blocks,
+                "channels": self.channels,
+                "attn_every": self.attn_every,
+                "attn_heads": self.attn_heads,
+            }
 
     return PolicyValueNet
 
@@ -170,7 +229,14 @@ def load_checkpoint(path: str, device: str = "cpu") -> Tuple[object, dict]:
         )
 
     config = payload.get("config", PRESETS[DEFAULT_PRESET])
-    model = _net_class()(blocks=config["blocks"], channels=config["channels"])
+    model = _net_class()(
+        blocks=config["blocks"],
+        channels=config["channels"],
+        # Checkpoints written before the attention hybrid have no attn
+        # keys; they describe pure ResNets and must keep loading.
+        attn_every=config.get("attn_every", 0),
+        attn_heads=config.get("attn_heads", 8),
+    )
     model.load_state_dict(payload["model"])
     model.to(device)
     model.eval()
