@@ -277,7 +277,13 @@ training amount, which the round timing showed was nearly free
 (self-play ~900 s and gating ~180 s per round vs ~35 s of
 training): `--round-epochs 5`, `--latest-repeat 4` (the newest
 round is only ~12k of a ~132k-position buffer), and
-`--round-max-steps 3600`.
+`--round-max-steps 3600`.  Batch 12 fixes the yardstick cell itself:
+on 2026-11-15 the single-process yardstick, piped through `tail -3`
+so nothing printed until it finished, ran 67+ minutes with no visible
+progress; the cell now runs `--processes 10` and streams per-game
+progress.  Match conditions are unchanged (same games, seeds and
+tally -- `evaluate --processes` is parallel-invariant by the seeding
+rule above), so the result stays comparable with the 0.338 baseline.
 
 ## Verification Commands
 
