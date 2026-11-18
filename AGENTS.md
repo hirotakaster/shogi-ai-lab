@@ -365,10 +365,47 @@ block-2 wrap-up: measure how concentrated the buffer's openings
 are (per-ply SFEN duplication) before deciding whether self-play
 needs a hotter opening temperature for diversity.
 
+Campaign 3 block 2 (rounds 11-20, 2026-11-18, L4) promoted
+**once**: round 15 scored 0.532 and the champion changed to
+24,060 steps -- the campaign's first promotion, and the
+self-play generator unfroze with it.  The other scores were
+0.448 / 0.480 / 0.497 / 0.460 / 0.485 / 0.527 / 0.517 / 0.520 /
+0.497 (block mean 0.496 vs block 1's 0.470; rounds 17-19
+clustered just under the gate).  The final champion's yardstick
+was **0.400** (16W-24L, -70 Elo) against the depth-3 heuristic
+-- below the distilled model's 0.450 but inside 40-game noise
+(sigma ~0.08), and the head-to-head gate had said +23 Elo, so
+an external gain is unconfirmed: the campaign-2 gate/yardstick
+divergence at a smaller amplitude.  Round 15's training log
+also settled the epochs question: the 6,000-step cap stopped
+it at epoch 8/10 with val top1 improving 0.476 -> 0.542, so the
+heavier regime is not overfitting; the cap, not the epochs, is
+the binding limit (~7,000 planned steps at this buffer size).
+
+The queued opening measurement came back extreme: across the
+20 self-play files (~2,000 recorded positions per ply), ply 2
+has only **2 distinct positions** (top line 99.9%), the ply
+4/6/8 top-1 shares are 74-93%, and real branching starts only
+around ply 10.  Temperature 1.0 does not explore when the
+policy is this peaked; the campaign's 8,000 games funnel
+through essentially one opening line.  Block 3 (rounds 21-30)
+therefore keeps the 24,060-step champion (decided 2026-11-18:
+rollback was the pre-agreed branch for a yardstick below
+0.450, but the head-to-head and the diversity data say the
+champion is not the problem -- the data distribution is, and
+rolling back would not change it) and attacks the funnel:
+two-stage temperature (Batch 16: `--opening-moves 10
+--opening-temperature 1.5`, then the regular temperature
+window) and `--round-max-steps 10000`, so the epochs bind
+instead of the cap.  The block-3 restore cell first archives
+the champion as `champions/campaign3_r15_24060.pt`.  After
+block 3: measure the yardstick again, and re-measure the
+opening diversity to check the funnel actually widened.
+
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 165 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 172 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

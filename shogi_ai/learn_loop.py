@@ -217,6 +217,13 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=16, help="MCTS leaf batch")
     parser.add_argument("--max-moves", type=int, default=320)
     parser.add_argument("--temperature-moves", type=int, default=30)
+    parser.add_argument("--opening-moves", type=int, default=0,
+                        help="self-play plies sampled at --opening-temperature "
+                             "before the regular temperature window; 0 disables "
+                             "(campaign 3 measured a single-line opening funnel, "
+                             "so block 3 runs the first 10 plies hotter)")
+    parser.add_argument("--opening-temperature", type=float, default=1.5,
+                        help="sampling temperature for the opening stage")
     parser.add_argument("--resign-threshold", type=float, default=-0.95)
     parser.add_argument("--processes", type=int, default=1, help="self-play workers")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -349,6 +356,8 @@ def main() -> None:
                     "--batch-size", str(args.batch_size),
                     "--max-moves", str(args.max_moves),
                     "--temperature-moves", str(args.temperature_moves),
+                    "--opening-moves", str(args.opening_moves),
+                    "--opening-temperature", str(args.opening_temperature),
                     "--resign-threshold", str(args.resign_threshold),
                     "--processes", str(args.processes),
                     "--backend", args.backend,

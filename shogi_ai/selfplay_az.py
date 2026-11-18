@@ -32,6 +32,14 @@ class SelfPlayConfig:
     #: Plies played at temperature 1.0 before switching to greedy play.
     temperature_moves: int = 30
     temperature: float = 1.0
+    #: Opening stage: the first ``opening_moves`` plies are sampled at
+    #: ``opening_temperature`` instead of ``temperature``.  Campaign 3's
+    #: self-play funnelled through a single opening line (at ply 2 only
+    #: 2 distinct positions across ~2,000 recorded games), so the opening
+    #: stage runs hotter to widen the funnel.  0 disables the stage and
+    #: keeps the legacy single-temperature schedule.
+    opening_moves: int = 0
+    opening_temperature: float = 1.5
     #: Resign when the root value stays below this for ``resign_patience``
     #: consecutive moves.  Set to -1.0 to never resign.
     resign_threshold: float = -0.95
@@ -72,6 +80,18 @@ class SelfPlayConfig:
             return self.playout_cap_simulations
         return max(8, self.simulations // 4)
 
+    def temperature_at(self, ply: int) -> float:
+        """Sampling temperature for ``ply`` under the staged schedule.
+
+        The opening stage (when enabled) wins first, then the regular
+        temperature window, then greedy play.
+        """
+        if ply < self.opening_moves:
+            return self.opening_temperature
+        if ply < self.temperature_moves:
+            return self.temperature
+        return 0.0
+
 
 @dataclass
 class GameSummary:
@@ -91,6 +111,8 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
     backend = make_backend(config.backend)
     if not 0.0 <= config.playout_cap_fraction <= 1.0:
         raise ValueError("playout_cap_fraction must lie in [0, 1]")
+    if config.opening_moves < 0 or config.opening_temperature < 0.0:
+        raise ValueError("opening_moves and opening_temperature must be >= 0")
     cap_enabled = config.playout_cap_fraction > 0.0
     mcts = MCTS(evaluator, simulations=config.simulations,
                 batch_size=config.batch_size, add_noise=True, rng=rng,
@@ -127,8 +149,7 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             break
 
         root_value = root.mean_value()
-        temperature = config.temperature if ply < config.temperature_moves else 0.0
-        move, _counts = select_move(root, temperature, rng)
+        move, _counts = select_move(root, config.temperature_at(ply), rng)
 
         if is_full:
             pending.append({
@@ -313,6 +334,11 @@ def main() -> None:
                         help="leaves evaluated per network call")
     parser.add_argument("--max-moves", type=int, default=320)
     parser.add_argument("--temperature-moves", type=int, default=30)
+    parser.add_argument("--opening-moves", type=int, default=0,
+                        help="plies sampled at --opening-temperature before "
+                             "the regular temperature window; 0 disables")
+    parser.add_argument("--opening-temperature", type=float, default=1.5,
+                        help="sampling temperature for the opening stage")
     parser.add_argument("--resign-threshold", type=float, default=-0.95,
                         help="-1.0 disables resignation")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -347,6 +373,8 @@ def main() -> None:
         batch_size=args.batch_size,
         max_moves=args.max_moves,
         temperature_moves=args.temperature_moves,
+        opening_moves=args.opening_moves,
+        opening_temperature=args.opening_temperature,
         resign_threshold=args.resign_threshold,
         backend=args.backend,
         model=args.model or None,
