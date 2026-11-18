@@ -335,6 +335,36 @@ restore/learn/check cells (Batch 14); do not use the campaign-2
 restore or save cells for it.  The base champion and the
 `campaign2_r10_43052` milestone stay archived as the fallback.
 
+Campaign 3 block 1 (rounds 1-10, 2026-11-17/18, L4) promoted
+**nobody**: the gate scores were 0.438 / 0.406 / 0.500 / 0.469 /
+0.438 / 0.506 / 0.463 / 0.537 / 0.463 / 0.469, and the distilled
+model stayed champion throughout (the round-10 yardstick was
+therefore pointless and was skipped -- that champion is the file
+already measured at 0.450).  Candidates trained longer every round
+(240 -> 2,990 steps) on a buffer growing to ~123k positions, yet
+the scores never trended up: a round's candidate is a light
+finetune of the champion on the champion's own self-play, so it
+converges to a champion copy, and the 0.55 gate then discards the
+small genuine gains along with the noise.  Block 2 (rounds 11-20)
+therefore changes the recipe, not the architecture (more attention
+blocks were considered and deferred -- at this data volume the
+base/attn distillation parity says architecture is not the binding
+constraint): `--gate 0.53` with `--eval-games 200` (a looser
+threshold measured more tightly, sigma ~0.035 instead of ~0.056,
+at ~+6 min of gating per round), and a real per-generation
+training pass instead of a finetune -- `--round-lr 1e-3`,
+`--round-epochs 10`, `--round-max-steps 6000`.  Promotion still
+requires beating the champion at the gate (always-promote was
+considered and rejected by the user); the block ends with a
+yardstick measurement of the final champion, and a bad regression
+rolls back to the distilled model.  The notebook carries block-2
+restore/learn cells (Batch 15); in a session continuing from
+block 1 only the learn cell is needed, because the loop skips the
+rounds recorded as finished in history.json.  Also queued for the
+block-2 wrap-up: measure how concentrated the buffer's openings
+are (per-ply SFEN duplication) before deciding whether self-play
+needs a hotter opening temperature for diversity.
+
 ## Verification Commands
 
 ```bash
