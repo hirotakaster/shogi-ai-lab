@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import multiprocessing as mp
 import os
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -40,6 +41,22 @@ class SelfPlayConfig:
     #: keeps the legacy single-temperature schedule.
     opening_moves: int = 0
     opening_temperature: float = 1.5
+    #: Temperature curve: ``(ply, temperature)`` control points in
+    #: ascending order.  When non-empty it replaces the opening/regular
+    #: schedule above: the temperature is flat at the first point's
+    #: value up to its ply, geometrically (log-linearly) interpolated
+    #: between neighbouring points, and flat at the last point's value
+    #: from its ply on; a point at temperature 0 is a step to greedy
+    #: play, not an interpolation target.  Campaign 3 block 4 runs
+    #: ``0:4.0,4:4.0,39:1.0,50:1.0,51:0.0`` -- flat at 4.0 for the
+    #: first four plies, a geometric decay to 1.0 by ply 39 (passing
+    #: 2.0 near ply 21), held to ply 50, greedy after -- because the
+    #: net is nowhere near discovering joseki yet: its crystallised
+    #: "main line" is early self-play noise that locked in, and
+    #: breadth is what the value net is starving for (block 3's milder
+    #: diversity fix bought +105 Elo on the external yardstick while
+    #: internal gate scores stayed flat).
+    temperature_points: Tuple[Tuple[int, float], ...] = ()
     #: Resign when the root value stays below this for ``resign_patience``
     #: consecutive moves.  Set to -1.0 to never resign.
     resign_threshold: float = -0.95
@@ -81,16 +98,63 @@ class SelfPlayConfig:
         return max(8, self.simulations // 4)
 
     def temperature_at(self, ply: int) -> float:
-        """Sampling temperature for ``ply`` under the staged schedule.
+        """Sampling temperature for ``ply``.
 
-        The opening stage (when enabled) wins first, then the regular
+        An explicit ``temperature_points`` curve wins when present;
+        the opening stage (when enabled) comes next, then the regular
         temperature window, then greedy play.
         """
+        points = self.temperature_points
+        if points:
+            if ply <= points[0][0]:
+                return points[0][1]
+            for (p0, t0), (p1, t1) in zip(points, points[1:]):
+                if ply < p1:
+                    if t0 <= 0.0 or t1 <= 0.0:
+                        # A zero endpoint is a step to greedy play,
+                        # not something to interpolate towards.
+                        return t0
+                    frac = (ply - p0) / (p1 - p0)
+                    return math.exp(math.log(t0)
+                                    + (math.log(t1) - math.log(t0)) * frac)
+            return points[-1][1]
         if ply < self.opening_moves:
             return self.opening_temperature
         if ply < self.temperature_moves:
             return self.temperature
         return 0.0
+
+
+def parse_temperature_points(text: str) -> Tuple[Tuple[int, float], ...]:
+    """Parse ``"0:4.0,4:4.0,39:1.0,50:1.0,51:0.0"`` into point tuples.
+
+    Each point is ``ply:temperature``; plies must be non-negative and
+    strictly increasing, temperatures non-negative.  An empty string
+    yields no points (the legacy schedule applies).
+    """
+    if not text:
+        return ()
+    points: List[Tuple[int, float]] = []
+    for part in text.split(","):
+        ply_text, sep, temp_text = part.partition(":")
+        if not sep:
+            raise ValueError(
+                f"temperature point {part!r} is not ply:temperature")
+        try:
+            point_ply = int(ply_text)
+            temperature = float(temp_text)
+        except ValueError:
+            raise ValueError(
+                f"temperature point {part!r} is not ply:temperature") from None
+        if point_ply < 0 or temperature < 0.0:
+            raise ValueError(
+                f"temperature point {part!r} needs a ply >= 0 "
+                "and a temperature >= 0")
+        if points and point_ply <= points[-1][0]:
+            raise ValueError(
+                "temperature point plies must be strictly increasing")
+        points.append((point_ply, temperature))
+    return tuple(points)
 
 
 @dataclass
@@ -113,6 +177,12 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
         raise ValueError("playout_cap_fraction must lie in [0, 1]")
     if config.opening_moves < 0 or config.opening_temperature < 0.0:
         raise ValueError("opening_moves and opening_temperature must be >= 0")
+    _plies = [point_ply for point_ply, _ in config.temperature_points]
+    if (any(point_ply < 0 for point_ply in _plies)
+            or _plies != sorted(set(_plies))
+            or any(temp < 0.0 for _, temp in config.temperature_points)):
+        raise ValueError("temperature_points must have non-negative, "
+                         "strictly increasing plies and temperatures >= 0")
     cap_enabled = config.playout_cap_fraction > 0.0
     mcts = MCTS(evaluator, simulations=config.simulations,
                 batch_size=config.batch_size, add_noise=True, rng=rng,
@@ -339,6 +409,13 @@ def main() -> None:
                              "the regular temperature window; 0 disables")
     parser.add_argument("--opening-temperature", type=float, default=1.5,
                         help="sampling temperature for the opening stage")
+    parser.add_argument("--temperature-points", type=parse_temperature_points,
+                        default=(),
+                        help="comma-separated ply:temperature control points, "
+                             "e.g. 0:4.0,4:4.0,39:1.0,50:1.0,51:0.0; the "
+                             "schedule interpolates geometrically between "
+                             "points and replaces the opening/regular "
+                             "schedule when given")
     parser.add_argument("--resign-threshold", type=float, default=-0.95,
                         help="-1.0 disables resignation")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -375,6 +452,7 @@ def main() -> None:
         temperature_moves=args.temperature_moves,
         opening_moves=args.opening_moves,
         opening_temperature=args.opening_temperature,
+        temperature_points=args.temperature_points,
         resign_threshold=args.resign_threshold,
         backend=args.backend,
         model=args.model or None,

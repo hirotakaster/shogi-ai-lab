@@ -11,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 
 from shogi_ai.evaluate import (MatchResult, _build_player, _init_match_worker,
-                               _play_game, _play_index, _record,
+                               _play_game, _play_index, _record, play_match,
                                play_match_parallel)
 from shogi_ai.learn_loop import evaluation_processes
 
@@ -31,9 +31,13 @@ def _args(**overrides):
 def _sequential_outcomes(args, games):
     challenger = _build_player("random", args, "challenger")
     champion = _build_player("random", args, "champion")
-    return [_play_game(challenger, champion, index, args.backend,
-                       args.max_moves, args.opening_moves, args.seed)
-            for index in range(games)]
+    outcomes = []
+    for index in range(games):
+        outcome, plies, _records = _play_game(
+            challenger, champion, index, args.backend, args.max_moves,
+            args.opening_moves, args.seed)
+        outcomes.append((outcome, plies))
+    return outcomes
 
 
 class RecordTests(unittest.TestCase):
@@ -65,7 +69,7 @@ class PerGameTests(unittest.TestCase):
         expected = _sequential_outcomes(args, 2)
         _init_match_worker("random", "random", vars(args))
         for index in range(2):
-            played_index, outcome, plies = _play_index(index)
+            played_index, outcome, plies, _records = _play_index(index)
             self.assertEqual(played_index, index)
             self.assertEqual((outcome, plies), expected[index])
 
@@ -124,6 +128,73 @@ class NoisyMatchTests(unittest.TestCase):
         args = _args(add_noise=True)
         self.assertTrue(_build_player("random", args, "challenger").add_noise)
         self.assertFalse(_build_player("random", _args(), "challenger").add_noise)
+
+
+class RecordedMatchTests(unittest.TestCase):
+    """A recorded gate doubles as data generation (Batch 17): the
+    records must be self-play-shaped, and recording must not change
+    how the games play out -- the gate's verdict has to stay a pure
+    measurement even when its games are harvested.
+    """
+
+    def _players(self, args):
+        return (_build_player("random", args, "challenger"),
+                _build_player("random", args, "champion"))
+
+    def _match(self, args, games, record):
+        return play_match(*self._players(args), games=games,
+                          backend_kind="python", max_moves=args.max_moves,
+                          opening_moves=args.opening_moves, seed=args.seed,
+                          verbose=False, record=record)
+
+    def test_recording_does_not_change_the_games(self):
+        args = _args(games=3)
+        plain = self._match(args, 3, record=False)
+        recorded = self._match(args, 3, record=True)
+        self.assertEqual(
+            (plain.games, plain.wins, plain.losses, plain.draws, plain.plies),
+            (recorded.games, recorded.wins, recorded.losses,
+             recorded.draws, recorded.plies))
+        self.assertEqual(plain.records, [])
+        self.assertGreater(len(recorded.records), 0)
+
+    def test_records_have_the_selfplay_shape(self):
+        args = _args(games=2)
+        result = self._match(args, 2, record=True)
+        required = {"sfen", "turn", "check", "policy", "q", "ply", "value"}
+        self.assertTrue(result.records)
+        for entry in result.records:
+            self.assertLessEqual(required, set(entry))
+            self.assertLessEqual(set(entry), required | {"capped"})
+            self.assertIn(entry["turn"], ("black", "white"))
+            self.assertIn(entry["value"], (-1.0, 0.0, 1.0))
+            self.assertAlmostEqual(
+                sum(p for _i, p in entry["policy"]), 1.0, places=3)
+
+    def test_capped_games_mark_their_records(self):
+        args = _args(games=1)
+        result = play_match(*self._players(args), games=1,
+                            backend_kind="python", max_moves=2,
+                            opening_moves=8, seed=args.seed,
+                            verbose=False, record=True)
+        self.assertEqual(result.plies, 2)
+        self.assertTrue(result.records)
+        for entry in result.records:
+            self.assertTrue(entry["capped"])
+            self.assertEqual(entry["value"], 0.0)
+
+    def test_parallel_recording_matches_sequential(self):
+        args = _args(games=4, record_out="records.jsonl")
+        sequential = self._match(args, 4, record=True)
+        parallel = play_match_parallel("random", "random", args, games=4,
+                                       processes=2, verbose=False)
+        self.assertEqual(len(parallel.records), len(sequential.records))
+
+        def key(entry):
+            return (entry["ply"], entry["sfen"], entry["value"])
+
+        self.assertEqual(sorted(map(key, parallel.records)),
+                         sorted(map(key, sequential.records)))
 
 
 class EvaluationProcessesTests(unittest.TestCase):

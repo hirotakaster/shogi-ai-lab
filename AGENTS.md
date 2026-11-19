@@ -402,10 +402,54 @@ the champion as `champions/campaign3_r15_24060.pt`.  After
 block 3: measure the yardstick again, and re-measure the
 opening diversity to check the funnel actually widened.
 
+Campaign 3 block 3 (rounds 21-30, 2026-11-18/19, L4) promoted
+**once**: round 24 scored 0.535 and the champion changed to
+34,060 steps.  The other scores were 0.500 / 0.522 / 0.487 /
+0.440 / 0.510 / 0.500 / 0.505 / 0.472 / 0.492 (block mean
+0.496, identical to block 2's).  As run, the opening
+temperature was **2.0**, raised from the notebook's 1.5 at
+launch by the user (temperature on visit counts flattens
+weakly: 1.5 would still have left ~75% of games on the same
+first move).  Every candidate trained the full 10,000-step
+cap (val top1 0.57-0.60).  The final champion's yardstick
+jumped to **0.550** (22W-18L-0D, +35 Elo) -- the campaign's
+first above-0.500 external score, up from the previous
+champion's 0.400.  The diversity fix verified on the rounds
+21-30 files (124,793 positions): ply-2 distinct positions
+2 -> 13 (top-1 still 95.6%: the first-move pair is the last
+funnel point), ply 4 top-1 78.9% -> 44.9%, ply 10 distinct
+68 -> 324, near-total diversity by ply 15.  Internal gate
+mean flat while the external yardstick jumped: diversity
+bought generalisation the internal gate cannot see.  All
+state is in `ARTIFACTS/campaign3`; the 24,060-step champion
+is archived as `champions/campaign3_r15_24060.pt`.
+
+Block 4 (rounds 31-40) presses on data volume and freshness,
+the constraint every experiment so far points at (search
+scaling failed the T4 A/B, distillation reached parity from
+data alone, block 3's gain came from a data-distribution
+change): 800 self-play games per round; a temperature
+curve (Batch 17: `--temperature-points
+0:4.0,4:4.0,39:1.0,50:1.0,51:0.0` -- flat at 4.0 for the
+first four plies, a geometric decay to 1.0 by ply 39, held
+to ply 50, greedy after; the net is nowhere near
+discovering joseki, its crystallised main line is early
+noise, so breadth comes first, into the early middlegame);
+the buffer as a 500,000-position window
+(`--max-positions` -- train_az's cap keeps the newest
+positions, so the window slides over generations); and the
+gate's 200 games recorded as training data
+(`--record-gate-games`; `gate_NNN.jsonl` joins the buffer
+from the next round).  Everything else carries over from
+block 3.  The block-4 restore cell first archives the
+champion as `champions/campaign3_r24_34060.pt`.  ~70
+min/round, ~12 h for the block; the loop resumes across
+sessions.
+
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 172 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 190 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

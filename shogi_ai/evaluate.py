@@ -8,18 +8,19 @@ challenger's score, so a training loop can keep or discard a generation.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import multiprocessing as mp
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Optional
+from typing import List, Optional
 
 import numpy as np
 
 from .backends import PurePythonBackend, make_backend
 from .core import BLACK
-from .mcts import MCTS, select_move
+from .mcts import MCTS, policy_targets, select_move
 
 
 class MctsPlayer:
@@ -37,6 +38,9 @@ class MctsPlayer:
         self.gumbel_candidates = gumbel_candidates
         self.add_noise = add_noise
         self.fpu_reduction = fpu_reduction
+        #: Root of the most recent search, kept so a recorded match can
+        #: turn the search into a training record (see ``_play_game``).
+        self.last_root = None
 
     def choose(self, backend, ply: int, temperature: float, rng):
         mcts = MCTS(self.evaluator, simulations=self.simulations,
@@ -45,6 +49,7 @@ class MctsPlayer:
                     gumbel_candidates=self.gumbel_candidates,
                     fpu_reduction=self.fpu_reduction)
         root = mcts.run(backend)
+        self.last_root = root
         if not root.moves:
             return None
         move, _counts = select_move(root, temperature, rng)
@@ -55,6 +60,9 @@ class HeuristicPlayer:
     """Plays with the dependency-free alpha-beta engine, as a fixed baseline."""
 
     name = "heuristic"
+
+    #: No search tree to record from; heuristic games yield no records.
+    last_root = None
 
     def __init__(self, depth: int = 3, time_limit: float = 1.0):
         from .engine import AlphaBetaEngine
@@ -76,6 +84,9 @@ class MatchResult:
     draws: int = 0
     plies: int = 0
     seconds: float = 0.0
+    #: Training records harvested from the match when recording was on
+    #: (``--record-out``); empty otherwise.
+    records: List[dict] = field(default_factory=list)
 
     @property
     def score(self) -> float:
@@ -100,19 +111,30 @@ class MatchResult:
 
 
 def _play_game(challenger, champion, game_index: int, backend_kind: str,
-               max_moves: int, opening_moves: int, seed: int):
-    """Play one match game; return (outcome, plies).
+               max_moves: int, opening_moves: int, seed: int,
+               record: bool = False):
+    """Play one match game; return (outcome, plies, records).
 
     ``outcome`` is from Black's point of view: +1 Black won, 0 draw,
     -1 White won.  The challenger takes Black in even-indexed games.
     The per-game RNG depends only on (seed, game_index), so a game plays
     out identically no matter which process runs it -- that is what makes
     the parallel match below a pure scheduling change.
+
+    With ``record`` set, every position an MCTS player searches is also
+    returned as a training record in the self-play format (the search's
+    visit distribution as the policy target, the game result as the
+    value target), so a gating match can double as data generation:
+    challenger-vs-champion games are the most relevant distribution the
+    loop produces, and they used to be thrown away.  Recording never
+    changes how the game plays out, so a recorded game is identical to
+    the same game unrecorded.
     """
     rng = np.random.default_rng(seed + game_index * 7919)
     backend = make_backend(backend_kind)
     challenger_is_black = game_index % 2 == 0
     outcome: Optional[int] = None
+    pending: List[dict] = []
     ply = 0
 
     while ply < max_moves:
@@ -128,12 +150,33 @@ def _play_game(challenger, champion, game_index: int, backend_kind: str,
         if move is None:
             outcome = -1 if backend.turn == BLACK else 1
             break
+        if record:
+            root = getattr(player, "last_root", None)
+            if root is not None and root.moves:
+                pending.append({
+                    "sfen": backend.sfen(),
+                    "turn": "black" if backend.turn == BLACK else "white",
+                    "check": bool(backend.snapshot().in_check),
+                    "policy": [[int(i), round(float(p), 6)]
+                               for i, p in policy_targets(root, backend.turn)],
+                    "q": round(root.mean_value(), 4),
+                    "ply": ply,
+                })
         backend.push(move)
         ply += 1
 
-    if outcome is None:
+    hit_cap = outcome is None
+    if hit_cap:
         outcome = 0
-    return outcome, ply
+    for entry in pending:
+        sign = 1 if entry["turn"] == "black" else -1
+        entry["value"] = float(outcome * sign)
+        if hit_cap:
+            # Not a played-out result: mirror self-play and mark the
+            # record so the value target comes from the search instead
+            # of the forced draw.
+            entry["capped"] = True
+    return outcome, ply, pending
 
 
 def _record(result: MatchResult, game_index: int, outcome: int, plies: int) -> None:
@@ -156,15 +199,18 @@ def _progress(result: MatchResult, games: int) -> None:
 
 def play_match(challenger, champion, games: int = 20, backend_kind: str = "auto",
                max_moves: int = 320, opening_moves: int = 8,
-               seed: int = 20260926, verbose: bool = True) -> MatchResult:
+               seed: int = 20260926, verbose: bool = True,
+               record: bool = False) -> MatchResult:
     """Play ``games`` games, alternating who takes Black."""
     result = MatchResult()
     started = time.time()
 
     for game in range(games):
-        outcome, plies = _play_game(challenger, champion, game,
-                                    backend_kind, max_moves, opening_moves, seed)
+        outcome, plies, records = _play_game(challenger, champion, game,
+                                             backend_kind, max_moves,
+                                             opening_moves, seed, record=record)
         _record(result, game, outcome, plies)
+        result.records.extend(records)
         if verbose:
             _progress(result, games)
 
@@ -218,9 +264,11 @@ def _play_index(game_index: int):
     """
     challenger, champion = _WORKER_PLAYERS
     args = _WORKER_CONFIG
-    outcome, plies = _play_game(challenger, champion, game_index, args.backend,
-                                args.max_moves, args.opening_moves, args.seed)
-    return game_index, outcome, plies
+    outcome, plies, records = _play_game(
+        challenger, champion, game_index, args.backend, args.max_moves,
+        args.opening_moves, args.seed,
+        record=bool(getattr(args, "record_out", "")))
+    return game_index, outcome, plies, records
 
 
 def play_match_parallel(challenger_spec: str, champion_spec: str, args,
@@ -238,9 +286,10 @@ def play_match_parallel(challenger_spec: str, champion_spec: str, args,
     context = mp.get_context("spawn")
     with context.Pool(processes, initializer=_init_match_worker,
                       initargs=(challenger_spec, champion_spec, vars(args))) as pool:
-        for game_index, outcome, plies in pool.imap_unordered(
+        for game_index, outcome, plies, records in pool.imap_unordered(
                 _play_index, range(games), chunksize=1):
             _record(result, game_index, outcome, plies)
+            result.records.extend(records)
             if verbose:
                 _progress(result, games)
     result.seconds = time.time() - started
@@ -278,6 +327,9 @@ def main() -> None:
     parser.add_argument("--heuristic-time", type=float, default=1.0)
     parser.add_argument("--gate", type=float, default=0.0,
                         help="if set, exit non-zero when the score falls below this")
+    parser.add_argument("--record-out", default="",
+                        help="also write the match's positions as self-play "
+                             "training records (JSONL) to this path")
     parser.add_argument("--seed", type=int, default=20260926)
     args = parser.parse_args()
 
@@ -296,8 +348,14 @@ def main() -> None:
         champion = _build_player(args.champion, args, "champion")
         result = play_match(challenger, champion, games=args.games,
                             backend_kind=args.backend, max_moves=args.max_moves,
-                            opening_moves=args.opening_moves, seed=args.seed)
+                            opening_moves=args.opening_moves, seed=args.seed,
+                            record=bool(args.record_out))
     print(result.summary(args.challenger, args.champion))
+    if args.record_out:
+        with open(args.record_out, "w", encoding="utf-8") as handle:
+            for entry in result.records:
+                handle.write(json.dumps(entry) + "\n")
+        print(f"recorded {len(result.records)} positions to {args.record_out}")
 
     if args.gate > 0.0:
         if result.score < args.gate:

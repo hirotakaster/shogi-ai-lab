@@ -81,24 +81,42 @@ def evaluation_processes(args) -> int:
     return args.eval_processes if args.eval_processes > 0 else args.processes
 
 
+def _round_order(path: Path):
+    """Sort key for generated data files: by round, self-play first.
+
+    A round's gate file is played after that round's training, so in
+    round order it belongs right behind the round's self-play file;
+    both join the buffer from the following round on.
+    """
+    kind, _, number = path.stem.partition("_")
+    try:
+        round_number = int(number)
+    except ValueError:
+        round_number = 0
+    return (round_number, 0 if kind == "selfplay" else 1, path.name)
+
+
 def build_buffer(initial_data, data_dir: Path, latest: Optional[Path],
                  latest_repeat: int) -> List[str]:
     """Assemble the training file list for a round.
 
     Everything generated so far is replayed (subject to train_az's
     position cap): the initial bootstrap data when supplied, then every
-    non-empty self-play file.  The newest round's file is repeated
-    ``latest_repeat`` times so fresh self-play data is not drowned by
-    the accumulated buffer -- with one round of ~25k positions against
-    100k+ of history, a repeat of 2-3 gives the new data real weight
-    without discarding the replay's stabilising effect.  Repetition is
-    skipped when the newest file is the *only* data (epochs already
-    control the passes over it) and when it is the initial file itself.
+    non-empty self-play file and recorded gate file, in round order.
+    The newest round's file is repeated ``latest_repeat`` times so
+    fresh self-play data is not drowned by the accumulated buffer --
+    with one round of ~25k positions against 100k+ of history, a
+    repeat of 2-3 gives the new data real weight without discarding
+    the replay's stabilising effect.  Repetition is skipped when the
+    newest file is the *only* data (epochs already control the passes
+    over it) and when it is the initial file itself.
     """
     buffer: List[str] = []
     if initial_data is not None:
         buffer.append(str(initial_data))
-    buffer += [str(p) for p in sorted(data_dir.glob("selfplay_*.jsonl"))
+    generated = list(data_dir.glob("selfplay_*.jsonl")) + \
+        list(data_dir.glob("gate_*.jsonl"))
+    buffer += [str(p) for p in sorted(generated, key=_round_order)
                if count_records(p) > 0]
     if (latest_repeat > 1 and latest is not None
             and (initial_data is None or latest != initial_data)
@@ -224,6 +242,12 @@ def main() -> None:
                              "so block 3 runs the first 10 plies hotter)")
     parser.add_argument("--opening-temperature", type=float, default=1.5,
                         help="sampling temperature for the opening stage")
+    parser.add_argument("--temperature-points", default="",
+                        help="comma-separated ply:temperature control points "
+                             "for self-play, e.g. "
+                             "0:4.0,4:4.0,39:1.0,50:1.0,51:0.0; forwarded to "
+                             "selfplay_az and replaces the opening/regular "
+                             "schedule when given")
     parser.add_argument("--resign-threshold", type=float, default=-0.95)
     parser.add_argument("--processes", type=int, default=1, help="self-play workers")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -278,6 +302,12 @@ def main() -> None:
                              "deterministic line (see AGENTS.md)")
     parser.add_argument("--eval-opening-moves", type=int, default=8,
                         help="temperature-1.0 opening plies in the gating match")
+    parser.add_argument("--record-gate-games", action="store_true",
+                        help="record each round's gating match as training "
+                             "data (gate_NNN.jsonl, joining the replay buffer "
+                             "from the next round on); the games are the "
+                             "candidate-vs-champion distribution, too valuable "
+                             "to throw away")
 
     parser.add_argument("--initial-data", default="",
                         help="existing JSONL used for round 1 instead of self-play")
@@ -374,12 +404,15 @@ def main() -> None:
                 ]
                 if args.fpu_reduction is not None:
                     cmd += ["--fpu-reduction", str(args.fpu_reduction)]
+                if args.temperature_points:
+                    cmd += ["--temperature-points", args.temperature_points]
                 if current is not None:
                     cmd += ["--model", str(current)]
                 run(cmd, root)
 
         # ---- 2. train ------------------------------------------------
         candidate = data_dir / f"policy_value_{round_number:03d}.pt"
+        gate_data = data_dir / f"gate_{round_number:03d}.jsonl"
         # Checkpoints are saved atomically, so a file that is here is complete.
         if candidate.exists() and candidate.stat().st_size > 0:
             print(f"reusing existing {candidate}")
@@ -442,6 +475,8 @@ def main() -> None:
             ]
             if args.eval_add_noise:
                 cmd.append("--add-noise")
+            if args.record_gate_games:
+                cmd += ["--record-out", str(gate_data)]
             if args.fpu_reduction is not None:
                 cmd += ["--fpu-reduction", str(args.fpu_reduction)]
             match = subprocess.run(cmd, cwd=root, check=True,
@@ -475,6 +510,8 @@ def main() -> None:
 
         if backup_dir is not None:
             round_files = [candidate, data_dir / "train_metrics.jsonl"]
+            if gate_data.exists():
+                round_files.append(gate_data)
             if data_path.parent == data_dir:
                 round_files.append(data_path)
             _backup_safely(backup_dir, data_dir, best_model, log_path,

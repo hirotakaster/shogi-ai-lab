@@ -176,6 +176,26 @@ class BuildBufferTests(unittest.TestCase):
             buffer = build_buffer(None, data_dir, data_dir / "selfplay_001.jsonl", 1)
             self.assertEqual([Path(p).name for p in buffer], ["selfplay_001.jsonl"])
 
+    def test_gate_files_join_in_round_order(self):
+        from shogi_ai.learn_loop import build_buffer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = self._seed(tmp, ["selfplay_001.jsonl", "gate_001.jsonl",
+                                        "selfplay_002.jsonl", "gate_002.jsonl"])
+            buffer = build_buffer(None, data_dir, data_dir / "selfplay_002.jsonl", 1)
+            self.assertEqual([Path(p).name for p in buffer],
+                             ["selfplay_001.jsonl", "gate_001.jsonl",
+                              "selfplay_002.jsonl", "gate_002.jsonl"])
+
+    def test_empty_gate_files_are_left_out(self):
+        from shogi_ai.learn_loop import build_buffer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = self._seed(tmp, ["selfplay_001.jsonl"])
+            (data_dir / "gate_001.jsonl").touch()
+            buffer = build_buffer(None, data_dir, data_dir / "selfplay_001.jsonl", 1)
+            self.assertEqual([Path(p).name for p in buffer], ["selfplay_001.jsonl"])
+
 
 class BackupStateTests(unittest.TestCase):
     """The Drive backup exists because a Colab runtime's disk is

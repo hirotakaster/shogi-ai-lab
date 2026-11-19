@@ -1,10 +1,14 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
 from shogi_ai.encoding import POLICY_SIZE, mirror_policy_index
-from shogi_ai.train_az import RandomMirrorDataset, _prepare, planned_steps
+from shogi_ai.train_az import (RandomMirrorDataset, _prepare, load_records,
+                               planned_steps)
 
 
 INITIAL_SFEN = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1"
@@ -120,6 +124,36 @@ class PlannedStepsTests(unittest.TestCase):
     def test_empty_loader_still_plans_one_step_per_epoch(self):
         self.assertEqual(planned_steps(epochs=2, batches_per_epoch=0,
                                        max_steps=0), 2)
+
+
+class LoadRecordsCapTests(unittest.TestCase):
+    """The replay window (Batch 17): over the position cap, the newest
+    positions survive -- later files are later generations, so the cap
+    is a sliding window over generations, not a truncation of the new
+    data.  Block 4 leans on this with --max-positions 500000.
+    """
+
+    def _write(self, tmp, name, markers):
+        path = Path(tmp) / name
+        path.write_text("".join(
+            json.dumps({"sfen": f"sfen-{marker}", "policy": []}) + "\n"
+            for marker in markers), encoding="utf-8")
+        return str(path)
+
+    def test_cap_keeps_the_newest_positions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [self._write(tmp, "a.jsonl", [0, 1, 2]),
+                     self._write(tmp, "b.jsonl", [100, 101, 102])]
+            rows = load_records(paths, max_positions=4)
+            self.assertEqual([row["sfen"] for row in rows],
+                             ["sfen-2", "sfen-100", "sfen-101", "sfen-102"])
+
+    def test_no_cap_loads_everything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = [self._write(tmp, "a.jsonl", [0, 1, 2]),
+                     self._write(tmp, "b.jsonl", [100, 101, 102])]
+            rows = load_records(paths, max_positions=None)
+            self.assertEqual(len(rows), 6)
 
 
 if __name__ == "__main__":
