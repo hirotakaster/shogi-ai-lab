@@ -437,7 +437,14 @@ discovering joseki, its crystallised main line is early
 noise, so breadth comes first, into the early middlegame);
 the buffer as a 500,000-position window
 (`--max-positions` -- train_az's cap keeps the newest
-positions, so the window slides over generations); and the
+positions, so the window slides over generations).  The
+buffer starts trimmed: rounds 1-20 self-play
+(pre-diversity-fix, funnelled through a single opening
+line) is excluded -- the block-4 restore cell deletes
+those files locally after restoring; they remain in the
+Drive backup (the backup is copy-only), so the trim is
+reversible.  The buffer therefore starts from rounds
+21-30 (~125k positions).  And the
 gate's 200 games recorded as training data
 (`--record-gate-games`; `gate_NNN.jsonl` joins the buffer
 from the next round).  Everything else carries over from
