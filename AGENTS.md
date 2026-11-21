@@ -88,6 +88,17 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   policy target is too noisy to train on.  Capped plies also never count
   toward resignation.  Note the name overlap: a *record's* `capped: true`
   still means the move-cap adjudication above, not a low-cap ply.
+- Self-play can ban named moves at the root on named plies
+  (`--banned-moves 0:2h5h,1:8b5b` in selfplay_az and learn_loop).
+  `MCTS.run(..., banned_indices=...)` drops those policy indices
+  from the root's edge lists before the search, so a banned move is
+  never searched, played or recorded; the restriction is applied on
+  every run, which is what makes it work for a retained subtree
+  adopted as the next root (it was expanded as an ordinary leaf
+  with every move present).  Only the root is restricted -- deeper
+  nodes are other positions, where the same policy index is a
+  different move.  A ban covering every legal move is ignored.
+  Gating and real play never pass a ban.
 - `MCTS.run(..., simulations=N)` overrides the budget for one call only;
   playout-cap randomisation is built on it.
 - PUCT selection supports first-play urgency (`--fpu-reduction` in
@@ -453,10 +464,48 @@ champion as `champions/campaign3_r24_34060.pt`.  ~70
 min/round, ~12 h for the block; the loop resumes across
 sessions.
 
+Block 4 as run extended to round 45 in three sessions
+(2026-11-20/21).  Rounds 31-35 on the original curve promoted
+R32 (0.642), R34 (0.535) and R35 (0.560) -- champion 64,060
+steps, block gate mean 0.540 -- yet that champion's yardstick
+regressed to **0.312** (12W-27L-1D, -137 Elo), the strongest
+gate/yardstick divergence yet.  The diversity re-measure
+cleared the curve's head: rounds 31-35 openings hit the target
+(ply-2 top-1 58.3%, 64 distinct), so the suspicion falls on
+the curve's depth -- still 1.43 at ply 30 and 1.0 held to
+ply 50, semi-random middlegame play corrupting the targets.
+Rounds 36-40 therefore ran a cooler curve
+(`0:4.0,4:4.0,12:1.0,30:1.0,31:0.0`: the hot head kept, the
+body back to block 3's shape) from the 64,060 champion, with
+rounds 31-35 self-play excluded from the buffer (archived
+locally; Drive copies intact) and their gate games kept.
+R37 (0.532) and R40 (0.535) promoted -- champion 84,060
+steps -- and the yardstick recovered to **0.500** (20W-20L),
+meeting the pre-agreed ~0.45-0.50 bar, so no rollback.
+Rounds 41-45 promoted R42 (0.530) and R45 (0.545) -- final
+champion **104,060 steps**, campaign total 9/45 -- but the
+yardstick fell again to **0.362** (14W-25L-1D, -98 Elo).
+The user's call: do not fret over the gate; no rollback was
+made (the 84,060-step champion stays archived as
+`champions/campaign3_r40_84060.pt`).
+
+Counting the recorded first moves (rounds 21-30 + 36-45
+files) then found the funnel's last point: sente's first
+move is the central rook swing 2h5h in **82.2%** of recorded
+games, the pair 2h5h + 8b5b in **65.5%**, with only 13
+distinct ply-1 positions -- the temperature curve widened
+everything except the very first move.  Block 5 (rounds
+46-50, Batch 19) therefore bans it in self-play
+(`--banned-moves 0:2h5h,1:8b5b`), keeps the cooler curve
+and the same buffer composition, and restores selectively
+(the block-5 restore cell copies only self-play rounds
+21-30 + 36-45 and gate rounds 31-45, and archives the
+104,060-step champion as `champions/campaign3_r45_104060.pt`).
+
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 190 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 202 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

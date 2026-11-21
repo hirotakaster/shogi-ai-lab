@@ -248,6 +248,11 @@ def main() -> None:
                              "0:4.0,4:4.0,39:1.0,50:1.0,51:0.0; forwarded to "
                              "selfplay_az and replaces the opening/regular "
                              "schedule when given")
+    parser.add_argument("--banned-moves", default="",
+                        help="comma-separated ply:usi moves banned at the "
+                             "self-play root, e.g. 0:2h5h,1:8b5b; forwarded "
+                             "to selfplay_az (campaign 3's first move was "
+                             "the central rook swing in 82 percent of games)")
     parser.add_argument("--resign-threshold", type=float, default=-0.95)
     parser.add_argument("--processes", type=int, default=1, help="self-play workers")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -406,6 +411,8 @@ def main() -> None:
                     cmd += ["--fpu-reduction", str(args.fpu_reduction)]
                 if args.temperature_points:
                     cmd += ["--temperature-points", args.temperature_points]
+                if args.banned_moves:
+                    cmd += ["--banned-moves", args.banned_moves]
                 if current is not None:
                     cmd += ["--model", str(current)]
                 run(cmd, root)

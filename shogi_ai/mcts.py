@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -225,7 +225,8 @@ class MCTS:
 
     # ------------------------------------------------------------------
     def run(self, backend, time_limit: Optional[float] = None,
-            simulations: Optional[int] = None) -> Node:
+            simulations: Optional[int] = None,
+            banned_indices: Optional[Collection[int]] = None) -> Node:
         """Search from ``backend``'s current position and return the root.
 
         ``time_limit`` caps the wall-clock budget in seconds.  It is checked
@@ -234,6 +235,11 @@ class MCTS:
         headroom.  ``simulations`` overrides the configured budget for this
         call only -- playout-cap randomisation in self-play uses it to give
         most plies a small budget and a few plies the full one.
+        ``banned_indices`` removes policy indices (in the root mover's
+        view) from the root's candidate list before the search runs: a
+        banned move is never searched, selected or recorded.  Self-play
+        uses it to keep a degenerate opening move out of specific plies;
+        evaluation play never passes it.
         """
         budget = self.simulations if simulations is None else max(0, simulations)
         self.evaluated = 0
@@ -262,6 +268,8 @@ class MCTS:
                 self.elapsed = time.time() - started
                 self.last_root = root
                 return root
+        if banned_indices:
+            self._restrict_root(root, backend.turn, banned_indices)
         if self.search_mode == "gumbel":
             done = self._run_gumbel(root, backend, budget, started, time_limit)
             self.simulations_done = done
@@ -460,6 +468,35 @@ class MCTS:
         indices = [policy_index(move, backend.turn) for move in raw_moves]
         node.expand(moves, raw_moves, softmax_over_legal(logits[0], indices))
         return float(values[0])
+
+    def _restrict_root(self, root: Node, turn: int,
+                       banned_indices: Collection[int]) -> None:
+        """Drop banned policy indices from the root's edge lists.
+
+        Only the root is restricted: the ban names moves in one specific
+        position (an opening move, above all), and deeper nodes describe
+        other positions where the same policy index is a different,
+        legitimate move.  A retained subtree root is restricted here
+        too, on the run that adopts it -- it was expanded as an ordinary
+        leaf during the previous search, with every move present, so
+        this is the first moment its edges can be filtered.  If the ban
+        would remove every move it is ignored: a position must always
+        keep something playable.
+        """
+        banned = set(banned_indices)
+        keep = [index for index, move in enumerate(root.raw_moves)
+                if policy_index(move, turn) not in banned]
+        if not keep or len(keep) == len(root.moves):
+            return
+        keep_idx = np.asarray(keep, dtype=int)
+        root.moves = [root.moves[index] for index in keep]
+        root.raw_moves = [root.raw_moves[index] for index in keep]
+        root.children = [root.children[index] for index in keep]
+        root.priors = root.priors[keep_idx]
+        root.raw_priors = root.raw_priors[keep_idx]
+        root.child_visits = root.child_visits[keep_idx]
+        root.child_value = root.child_value[keep_idx]
+        root.child_virtual = root.child_virtual[keep_idx]
 
     def _apply_root_noise(self, root: Node) -> None:
         base = root.raw_priors if root.raw_priors is not None else root.priors

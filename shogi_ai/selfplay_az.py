@@ -13,13 +13,14 @@ import json
 import math
 import multiprocessing as mp
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
 
-from .backends import make_backend
+from .backends import make_backend, raw_move_from_usi
 from .core import BLACK
 from .encoding import policy_index
 from .mcts import MCTS, policy_targets, select_move
@@ -57,6 +58,19 @@ class SelfPlayConfig:
     #: diversity fix bought +105 Elo on the external yardstick while
     #: internal gate scores stayed flat).
     temperature_points: Tuple[Tuple[int, float], ...] = ()
+    #: Moves banned at the root on specific plies, as ``(ply, USI)``
+    #: pairs.  A banned move is removed from the root's candidate list
+    #: before the search: never searched, never played, and absent
+    #: from the recorded policy target, so the net learns the position
+    #: without it.  Campaign 3's records showed why: sente's first
+    #: move was the central rook swing 2h5h in 82.2% of recorded games
+    #: and the pair 2h5h + 8b5b in 65.5% (rounds 21-30 and 36-45
+    #: files; only 13 distinct first-move positions) -- a habit locked
+    #: in by early self-play noise, not a discovered joseki.  Empty
+    #: (the default) bans nothing.  The ban binds self-play only;
+    #: gating and real play keep every move, and the training targets
+    #: already teach the banned move ~zero.
+    banned_moves: Tuple[Tuple[int, str], ...] = ()
     #: Resign when the root value stays below this for ``resign_patience``
     #: consecutive moves.  Set to -1.0 to never resign.
     resign_threshold: float = -0.95
@@ -157,6 +171,37 @@ def parse_temperature_points(text: str) -> Tuple[Tuple[int, float], ...]:
     return tuple(points)
 
 
+#: A USI board move (``2h5h``, optionally ``+``-suffixed) or drop (``R*5h``).
+_USI_MOVE = re.compile(r"^(?:[1-9][a-i][1-9][a-i]\+?|[PLNSGBR]\*[1-9][a-i])$")
+
+
+def parse_banned_moves(text: str) -> Tuple[Tuple[int, str], ...]:
+    """Parse ``"0:2h5h,1:8b5b"`` into ``(ply, USI)`` pairs.
+
+    Each entry is ``ply:usi``; plies must be non-negative (repeats are
+    allowed -- several moves can be banned on the same ply) and the
+    USI must be a board move or a drop.  An empty string yields no
+    bans.
+    """
+    if not text:
+        return ()
+    entries: List[Tuple[int, str]] = []
+    for part in text.split(","):
+        ply_text, sep, usi = part.partition(":")
+        if not sep or not _USI_MOVE.match(usi):
+            raise ValueError(
+                f"banned move {part!r} is not ply:usi (e.g. 0:2h5h)")
+        try:
+            ban_ply = int(ply_text)
+        except ValueError:
+            raise ValueError(
+                f"banned move {part!r} is not ply:usi (e.g. 0:2h5h)") from None
+        if ban_ply < 0:
+            raise ValueError(f"banned move {part!r} needs a ply >= 0")
+        entries.append((ban_ply, usi))
+    return tuple(entries)
+
+
 @dataclass
 class GameSummary:
     records: List[dict] = field(default_factory=list)
@@ -183,6 +228,12 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             or any(temp < 0.0 for _, temp in config.temperature_points)):
         raise ValueError("temperature_points must have non-negative, "
                          "strictly increasing plies and temperatures >= 0")
+    banned_by_ply: dict = {}
+    for ban_ply, usi in config.banned_moves:
+        if ban_ply < 0 or not _USI_MOVE.match(usi):
+            raise ValueError("banned_moves entries need a ply >= 0 "
+                             "and a USI move")
+        banned_by_ply.setdefault(ban_ply, []).append(usi)
     cap_enabled = config.playout_cap_fraction > 0.0
     mcts = MCTS(evaluator, simulations=config.simulations,
                 batch_size=config.batch_size, add_noise=True, rng=rng,
@@ -212,7 +263,13 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
         is_full = (not cap_enabled) or float(rng.random()) < config.playout_cap_fraction
         ply_simulations = (config.simulations if is_full
                            else config.capped_simulations())
-        root = mcts.run(backend, simulations=ply_simulations)
+        banned_indices = None
+        if ply in banned_by_ply:
+            banned_indices = {
+                policy_index(raw_move_from_usi(usi), backend.turn)
+                for usi in banned_by_ply[ply]}
+        root = mcts.run(backend, simulations=ply_simulations,
+                        banned_indices=banned_indices)
         if not root.moves:
             outcome = -1 if backend.turn == BLACK else 1
             reason = "no legal move"
@@ -416,6 +473,12 @@ def main() -> None:
                              "schedule interpolates geometrically between "
                              "points and replaces the opening/regular "
                              "schedule when given")
+    parser.add_argument("--banned-moves", type=parse_banned_moves,
+                        default=(),
+                        help="comma-separated ply:usi moves banned at the "
+                             "self-play root, e.g. 0:2h5h,1:8b5b; a banned "
+                             "move is never searched, played or recorded "
+                             "on that ply")
     parser.add_argument("--resign-threshold", type=float, default=-0.95,
                         help="-1.0 disables resignation")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -453,6 +516,7 @@ def main() -> None:
         opening_moves=args.opening_moves,
         opening_temperature=args.opening_temperature,
         temperature_points=args.temperature_points,
+        banned_moves=args.banned_moves,
         resign_threshold=args.resign_threshold,
         backend=args.backend,
         model=args.model or None,
