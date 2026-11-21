@@ -99,6 +99,20 @@ Google Colab GPU. Local play must stay dependency-free; training is a Colab job.
   nodes are other positions, where the same policy index is a
   different move.  A ban covering every legal move is ignored.
   Gating and real play never pass a ban.
+- Self-play can instead explore the opening by *playing* from the
+  network's raw priors (`--prior-sample-moves N
+  --prior-sample-temperature T` in selfplay_az and learn_loop;
+  `sample_prior_move` in mcts.py).  Only the played move changes --
+  the recorded policy target stays the search's distribution.  This
+  attacks the same first-move lock-in from the exploration side:
+  temperature on the improved policy cannot revive a move the
+  search's Q values have written off, because an unplayed move's
+  value is never corrected by a real outcome.  During the same
+  stage `--opening-candidates K` widens the Gumbel root for one
+  call (`MCTS.run(..., gumbel_candidates=K)`), so the search
+  considers more first moves than the production width.  Both are
+  opt-in and default off; the user chose this over the ban above
+  (2026-11-21: do not tie the search's hands).
 - `MCTS.run(..., simulations=N)` overrides the budget for one call only;
   playout-cap randomisation is built on it.
 - PUCT selection supports first-play urgency (`--fpu-reduction` in
@@ -495,17 +509,61 @@ move is the central rook swing 2h5h in **82.2%** of recorded
 games, the pair 2h5h + 8b5b in **65.5%**, with only 13
 distinct ply-1 positions -- the temperature curve widened
 everything except the very first move.  Block 5 (rounds
-46-50, Batch 19) therefore bans it in self-play
-(`--banned-moves 0:2h5h,1:8b5b`), keeps the cooler curve
-and the same buffer composition, and restores selectively
-(the block-5 restore cell copies only self-play rounds
-21-30 + 36-45 and gate rounds 31-45, and archives the
-104,060-step champion as `champions/campaign3_r45_104060.pt`).
+46-50, Batch 19) prepared a self-play ban of the pair
+(`--banned-moves 0:2h5h,1:8b5b`), the cooler curve and a
+selective restore (only self-play rounds 21-30 + 36-45 and
+gate rounds 31-45 copied; the 104,060-step champion archived
+as `champions/campaign3_r45_104060.pt`).  The user then
+reversed the ban (2026-11-21), and Batch 20 implemented the
+exploration-side alternative instead: prior-sampled opening
+moves with a wider Gumbel root (see Development Notes).
+Block 5 itself was then shelved: the user chose the clean
+restart below (Campaign 4) over continuing the lineage.
+
+## Campaign 4 (from scratch, decided 2026-11-22)
+
+Campaign 3's lineage is abandoned, not continued: all past
+self-play data is discarded and learning restarts from zero.
+The reasoning is the lock-in measured at the end of campaign
+3 -- the bias lives in both the weights and the buffer (the
+2026-11-15 distillation proved old records re-teach their
+bias to a fresh network), the champion being discarded
+scores only 0.362 on the yardstick, and the project's real
+asset is the recipe knowledge in this file and the notebook,
+not the weights.  The user is deleting the old campaigns'
+Drive artefacts himself; any milestone champion kept
+anywhere is a sparring reference only, never training input.
+
+Campaign 4 starts from a purely random network -- no
+bootstrap either (the user dropped the campaign-1-style
+heuristic bootstrap as well, 2026-11-22): round 1 self-plays
+with the random net and promotes unopposed, there being no
+champion to beat.  No existing records are used anywhere,
+and the depth-3 heuristic stays a measuring stick only --
+its games never enter training data.  The
+recipe is campaign 3 block 4's, with the temperature curve
+as the only diversity measure on from round 1: attn preset;
+800 games/round; Gumbel candidates 8; the cooler curve
+`0:4.0,4:4.0,12:1.0,30:1.0,31:0.0`; gate 0.53 over 200 games.
+Prior sampling (Batch 20) is implemented but deliberately
+NOT used: from a random start there is no inherited lock-in
+to break, and the user wants to see what emerges from the
+clean start's own diversity first.  If the first-move count
+after block 1 shows the funnel forming anyway, it can be
+switched on with a one-line cell edit.
+with `--eval-add-noise --record-gate-games`; buffer window
+500,000; finetuning regime round-lr 1e-3 / round-epochs 10
+/ round-max-steps 10000, latest-repeat 4.  Backups go to
+`ARTIFACTS/campaign4/`.  The notebook carries campaign-4
+restore/learn/check cells (Batch 20).  First block: rounds
+1-10, then the yardstick and a first-move distribution
+count -- the point of the restart is that the opening
+funnel never forms, and that is checkable.
 
 ## Verification Commands
 
 ```bash
-python3 -m unittest discover -s tests   # 202 tests; cshogi/torch tests skip when absent
+python3 -m unittest discover -s tests   # 208 tests; cshogi/torch tests skip when absent
 python3 server.py
 python3 -m shogi_ai.self_play --games 2 --depth 2 --processes 2 --out data/smoke.jsonl
 ```

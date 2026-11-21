@@ -226,7 +226,8 @@ class MCTS:
     # ------------------------------------------------------------------
     def run(self, backend, time_limit: Optional[float] = None,
             simulations: Optional[int] = None,
-            banned_indices: Optional[Collection[int]] = None) -> Node:
+            banned_indices: Optional[Collection[int]] = None,
+            gumbel_candidates: Optional[int] = None) -> Node:
         """Search from ``backend``'s current position and return the root.
 
         ``time_limit`` caps the wall-clock budget in seconds.  It is checked
@@ -239,7 +240,10 @@ class MCTS:
         view) from the root's candidate list before the search runs: a
         banned move is never searched, selected or recorded.  Self-play
         uses it to keep a degenerate opening move out of specific plies;
-        evaluation play never passes it.
+        evaluation play never passes it.  ``gumbel_candidates`` overrides
+        the configured Gumbel root width for this call only (ignored in
+        puct mode); self-play's opening stage uses it to have the search
+        consider more first moves than the production width of 8.
         """
         budget = self.simulations if simulations is None else max(0, simulations)
         self.evaluated = 0
@@ -271,7 +275,8 @@ class MCTS:
         if banned_indices:
             self._restrict_root(root, backend.turn, banned_indices)
         if self.search_mode == "gumbel":
-            done = self._run_gumbel(root, backend, budget, started, time_limit)
+            done = self._run_gumbel(root, backend, budget, started, time_limit,
+                                    gumbel_candidates)
             self.simulations_done = done
             self.elapsed = time.time() - started
             self.last_root = root
@@ -298,7 +303,8 @@ class MCTS:
 
     # ------------------------------------------------------------------
     def _run_gumbel(self, root: Node, backend, budget: int,
-                    started: float, time_limit: Optional[float]) -> int:
+                    started: float, time_limit: Optional[float],
+                    candidates_override: Optional[int] = None) -> int:
         """Gumbel AlphaZero at the root: Sequential Halving over top moves.
 
         Only the ``gumbel_candidates`` actions with the highest
@@ -324,7 +330,9 @@ class MCTS:
         logits = np.log(np.clip(priors.astype(np.float64), 1e-12, None))
         gumbel = (_sample_gumbel(self.rng, count) if self.add_noise
                   else np.zeros(count, dtype=np.float64))
-        considered = int(min(self.gumbel_candidates, count))
+        width = (self.gumbel_candidates if candidates_override is None
+                 else max(1, candidates_override))
+        considered = int(min(width, count))
         candidates = [int(i) for i in
                       np.argsort(-(gumbel + logits))[:considered]]
 
@@ -565,6 +573,31 @@ def select_move(root: Node, temperature: float, rng: np.random.Generator):
     total = scaled.sum()
     probs = scaled / total if total > 0 else np.full(counts.size, 1.0 / counts.size)
     return root.moves[int(rng.choice(counts.size, p=probs))], counts
+
+
+def sample_prior_move(root: Node, temperature: float, rng: np.random.Generator):
+    """Pick a move from the root's raw network priors at ``temperature``.
+
+    Unlike :func:`select_move`, which samples the search's improved
+    policy (or visit counts), this samples what the network believed
+    *before* the search: ``raw_priors`` renormalised after raising to
+    ``1 / temperature``.  Self-play's opening stage plays from it so
+    that first moves the search's Q values have written off still get
+    played -- and their positions searched, and their outcomes
+    recorded -- which is the only way those Q values ever get
+    corrected.  Returns None when the root carries no priors, so the
+    caller can fall back to :func:`select_move`.
+    """
+    priors = root.raw_priors if root.raw_priors is not None else root.priors
+    if priors is None or not len(root.moves):
+        return None
+    if temperature <= 1e-6:
+        return root.moves[int(np.argmax(priors))]
+    scaled = np.clip(priors.astype(np.float64), 0.0, None) ** (1.0 / temperature)
+    total = float(scaled.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return root.moves[int(np.argmax(priors))]
+    return root.moves[int(rng.choice(len(root.moves), p=scaled / total))]
 
 
 def policy_targets(root: Node, turn: int) -> List[Tuple[int, float]]:

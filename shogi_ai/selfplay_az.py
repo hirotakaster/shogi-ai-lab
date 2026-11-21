@@ -23,7 +23,7 @@ import numpy as np
 from .backends import make_backend, raw_move_from_usi
 from .core import BLACK
 from .encoding import policy_index
-from .mcts import MCTS, policy_targets, select_move
+from .mcts import MCTS, policy_targets, sample_prior_move, select_move
 
 
 @dataclass
@@ -71,6 +71,27 @@ class SelfPlayConfig:
     #: gating and real play keep every move, and the training targets
     #: already teach the banned move ~zero.
     banned_moves: Tuple[Tuple[int, str], ...] = ()
+    #: Prior-sampled opening stage: for the first ``prior_sample_moves``
+    #: plies the played move is sampled from the network's raw priors
+    #: at ``prior_sample_temperature`` instead of from the search's
+    #: improved policy.  The recorded policy target is unchanged (the
+    #: search's distribution); only the move actually played explores.
+    #: This exists because temperature on the improved policy has a
+    #: ceiling: the search concentrates on the move its Q values favour,
+    #: unfavoured first moves are then never played, so their values
+    #: are never corrected by real outcomes -- the self-confirming loop
+    #: behind the 82.2 percent first-move concentration above.
+    #: Playing from the prior breaks the loop without banning anything:
+    #: every legal move keeps the probability the network gives it.
+    #: 0 (the default) disables the stage.
+    prior_sample_moves: int = 0
+    prior_sample_temperature: float = 1.0
+    #: Gumbel candidate width during the prior-sample stage; 0 keeps
+    #: ``gumbel_candidates``.  A wider root lets the search *consider*
+    #: more first moves, so the recorded targets for opening positions
+    #: spread over more than the production handful.  Ignored in puct
+    #: mode and outside the stage.
+    opening_candidates: int = 0
     #: Resign when the root value stays below this for ``resign_patience``
     #: consecutive moves.  Set to -1.0 to never resign.
     resign_threshold: float = -0.95
@@ -234,6 +255,11 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             raise ValueError("banned_moves entries need a ply >= 0 "
                              "and a USI move")
         banned_by_ply.setdefault(ban_ply, []).append(usi)
+    if config.prior_sample_moves < 0 or config.prior_sample_temperature < 0.0:
+        raise ValueError("prior_sample_moves and prior_sample_temperature "
+                         "must be >= 0")
+    if config.opening_candidates < 0:
+        raise ValueError("opening_candidates must be >= 0")
     cap_enabled = config.playout_cap_fraction > 0.0
     mcts = MCTS(evaluator, simulations=config.simulations,
                 batch_size=config.batch_size, add_noise=True, rng=rng,
@@ -268,15 +294,30 @@ def play_one_game(evaluator, config: SelfPlayConfig, seed: int) -> GameSummary:
             banned_indices = {
                 policy_index(raw_move_from_usi(usi), backend.turn)
                 for usi in banned_by_ply[ply]}
-        root = mcts.run(backend, simulations=ply_simulations,
-                        banned_indices=banned_indices)
+        prior_stage = ply < config.prior_sample_moves
+        root = mcts.run(
+            backend, simulations=ply_simulations,
+            banned_indices=banned_indices,
+            gumbel_candidates=(config.opening_candidates
+                               if prior_stage and config.opening_candidates > 0
+                               else None))
         if not root.moves:
             outcome = -1 if backend.turn == BLACK else 1
             reason = "no legal move"
             break
 
         root_value = root.mean_value()
-        move, _counts = select_move(root, config.temperature_at(ply), rng)
+        move = None
+        if prior_stage:
+            # Opening exploration stage: the played move comes from the
+            # network's raw priors, not the search result, so moves the
+            # search's Q values have written off still reach real
+            # positions and real outcomes.  The record below still
+            # stores the search's own policy target.
+            move = sample_prior_move(
+                root, config.prior_sample_temperature, rng)
+        if move is None:
+            move, _counts = select_move(root, config.temperature_at(ply), rng)
 
         if is_full:
             pending.append({
@@ -479,6 +520,16 @@ def main() -> None:
                              "self-play root, e.g. 0:2h5h,1:8b5b; a banned "
                              "move is never searched, played or recorded "
                              "on that ply")
+    parser.add_argument("--prior-sample-moves", type=int, default=0,
+                        help="opening plies whose played move is sampled "
+                             "from the network's raw priors instead of the "
+                             "search result; the recorded target stays the "
+                             "search's; 0 disables")
+    parser.add_argument("--prior-sample-temperature", type=float, default=1.0,
+                        help="sampling temperature for --prior-sample-moves")
+    parser.add_argument("--opening-candidates", type=int, default=0,
+                        help="Gumbel candidate width during the "
+                             "prior-sample stage; 0 keeps --gumbel-candidates")
     parser.add_argument("--resign-threshold", type=float, default=-0.95,
                         help="-1.0 disables resignation")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -517,6 +568,9 @@ def main() -> None:
         opening_temperature=args.opening_temperature,
         temperature_points=args.temperature_points,
         banned_moves=args.banned_moves,
+        prior_sample_moves=args.prior_sample_moves,
+        prior_sample_temperature=args.prior_sample_temperature,
+        opening_candidates=args.opening_candidates,
         resign_threshold=args.resign_threshold,
         backend=args.backend,
         model=args.model or None,

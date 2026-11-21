@@ -253,6 +253,15 @@ def main() -> None:
                              "self-play root, e.g. 0:2h5h,1:8b5b; forwarded "
                              "to selfplay_az (campaign 3's first move was "
                              "the central rook swing in 82 percent of games)")
+    parser.add_argument("--prior-sample-moves", type=int, default=0,
+                        help="opening plies whose played move is sampled "
+                             "from the network's raw priors instead of the "
+                             "search result; forwarded to selfplay_az")
+    parser.add_argument("--prior-sample-temperature", type=float, default=1.0,
+                        help="sampling temperature for --prior-sample-moves")
+    parser.add_argument("--opening-candidates", type=int, default=0,
+                        help="Gumbel candidate width during the "
+                             "prior-sample stage; 0 keeps --gumbel-candidates")
     parser.add_argument("--resign-threshold", type=float, default=-0.95)
     parser.add_argument("--processes", type=int, default=1, help="self-play workers")
     parser.add_argument("--backend", choices=("auto", "cshogi", "python"), default="auto")
@@ -413,6 +422,14 @@ def main() -> None:
                     cmd += ["--temperature-points", args.temperature_points]
                 if args.banned_moves:
                     cmd += ["--banned-moves", args.banned_moves]
+                if args.prior_sample_moves:
+                    cmd += ["--prior-sample-moves",
+                            str(args.prior_sample_moves),
+                            "--prior-sample-temperature",
+                            str(args.prior_sample_temperature)]
+                if args.opening_candidates:
+                    cmd += ["--opening-candidates",
+                            str(args.opening_candidates)]
                 if current is not None:
                     cmd += ["--model", str(current)]
                 run(cmd, root)
